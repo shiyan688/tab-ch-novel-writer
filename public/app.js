@@ -8,6 +8,7 @@ const MAX_CONTEXT_CHARS = 3000;
 const apiBaseUrlInput = document.getElementById("apiBaseUrl");
 const apiKeyInput = document.getElementById("apiKey");
 const modelInput = document.getElementById("model");
+const chapterModelInput = document.getElementById("chapterModel");
 const saveApiConfigBtn = document.getElementById("saveApiConfig");
 const clearApiConfigBtn = document.getElementById("clearApiConfig");
 
@@ -33,12 +34,15 @@ const statusEl = document.getElementById("status");
 const autosaveInfoEl = document.getElementById("autosaveInfo");
 const suggestionPreviewEl = document.getElementById("suggestionPreview");
 const folderInfoEl = document.getElementById("folderInfo");
+const chapterTargetCharsInput = document.getElementById("chapterTargetChars");
+const continueChapterBtn = document.getElementById("continueChapterBtn");
 
 let project = createDefaultProject();
 let suggestion = "";
 let completionDebounceTimer = null;
 let autosaveTimer = null;
 let inFlightAbortController = null;
+let chapterAbortController = null;
 let lastCompletionKey = "";
 let defaultsLoaded = false;
 let selectedFolderHandle = null;
@@ -68,6 +72,10 @@ function bindEvents() {
     apiKeyInput.value = "";
     saveApiConfigToLocal();
     setStatus("状态：API Key 已清空");
+  });
+
+  continueChapterBtn.addEventListener("click", async () => {
+    await requestChapterContinuation();
   });
 
   novelTitleInput.addEventListener("input", () => {
@@ -368,6 +376,7 @@ function loadApiConfigFromLocal() {
     apiBaseUrlInput.value = asText(config.apiBaseUrl);
     apiKeyInput.value = asText(config.apiKey);
     modelInput.value = asText(config.model);
+    chapterModelInput.value = asText(config.chapterModel);
   } catch {
     // ignore corrupted local config
   }
@@ -385,12 +394,19 @@ async function loadServerDefaults() {
     if (!modelInput.value.trim()) {
       modelInput.value = asText(config.model, "gpt-4o-mini");
     }
+
+    if (!chapterModelInput.value.trim()) {
+      chapterModelInput.value = asText(config.chapterModel, "gpt-4.1-mini");
+    }
   } catch {
     if (!apiBaseUrlInput.value.trim()) {
       apiBaseUrlInput.value = "https://api.openai.com/v1";
     }
     if (!modelInput.value.trim()) {
       modelInput.value = "gpt-4o-mini";
+    }
+    if (!chapterModelInput.value.trim()) {
+      chapterModelInput.value = "gpt-4.1-mini";
     }
   }
 }
@@ -399,7 +415,8 @@ function saveApiConfigToLocal() {
   const config = {
     apiBaseUrl: apiBaseUrlInput.value.trim(),
     apiKey: apiKeyInput.value.trim(),
-    model: modelInput.value.trim()
+    model: modelInput.value.trim(),
+    chapterModel: chapterModelInput.value.trim()
   };
 
   localStorage.setItem(API_CONFIG_KEY, JSON.stringify(config));
@@ -482,6 +499,75 @@ async function requestCompletion() {
   }
 }
 
+async function requestChapterContinuation() {
+  if (!defaultsLoaded) return;
+  if (chapterAbortController) return;
+
+  const chapter = getCurrentChapter();
+  const start = editor.selectionStart;
+  const end = editor.selectionEnd;
+  const beforeCursor = chapter.content.slice(0, start);
+  const context = beforeCursor.slice(-6000);
+
+  if (!context.trim() && !chapter.setting.trim() && !project.characterSetting.trim()) {
+    setStatus("状态：请先输入正文或设定，再执行整章续写");
+    return;
+  }
+
+  const targetChars = clampInt(chapterTargetCharsInput.value, 300, 5000, 1200);
+  chapterTargetCharsInput.value = String(targetChars);
+  chapterAbortController = new AbortController();
+  setContinueChapterBusy(true);
+  setStatus("状态：正在续写完整章节...");
+
+  try {
+    const response = await fetch("/api/continue-chapter", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: chapterAbortController.signal,
+      body: JSON.stringify({
+        context,
+        apiBaseUrl: apiBaseUrlInput.value.trim(),
+        apiKey: apiKeyInput.value.trim(),
+        chapterModel: chapterModelInput.value.trim(),
+        targetChars,
+        novelTitle: project.title,
+        chapterTitle: chapter.title,
+        chapterSetting: chapter.setting,
+        characterSetting: project.characterSetting
+      })
+    });
+
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.error || "整章续写失败");
+    }
+
+    const longText = normalizeLongContinuation(payload.content || "");
+    if (!longText) {
+      setStatus("状态：未生成可用的整章内容");
+      return;
+    }
+
+    const insertText = formatChapterInsertion(beforeCursor, longText);
+    editor.setRangeText(insertText, start, end, "end");
+    chapter.content = editor.value;
+    chapter.updatedAt = Date.now();
+    clearSuggestion();
+    queueAutosave();
+    setStatus("状态：整章续写已插入");
+  } catch (err) {
+    if (err.name === "AbortError") {
+      setStatus("状态：已取消整章续写");
+      return;
+    }
+    setStatus(`状态：整章续写失败 - ${err.message}`);
+  } finally {
+    chapterAbortController = null;
+    setContinueChapterBusy(false);
+  }
+}
+
 function collectParagraphMemory(content, cursor) {
   const beforeText = content.slice(0, cursor);
   const afterText = content.slice(cursor);
@@ -526,6 +612,23 @@ function normalizeSuggestion(raw, context) {
   }
 
   return text.slice(0, 160);
+}
+
+function normalizeLongContinuation(raw) {
+  return String(raw || "")
+    .replace(/\r/g, "")
+    .replace(/^```[\s\S]*?\n/, "")
+    .replace(/```$/, "")
+    .trim()
+    .slice(0, 12000);
+}
+
+function formatChapterInsertion(beforeCursor, longText) {
+  let prefix = "";
+  if (beforeCursor && !/\s$/.test(beforeCursor)) {
+    prefix = "\n";
+  }
+  return `${prefix}${longText}`;
 }
 
 function acceptSuggestion() {
@@ -574,6 +677,11 @@ function setStatus(text) {
   statusEl.textContent = text;
 }
 
+function setContinueChapterBusy(isBusy) {
+  continueChapterBtn.disabled = isBusy;
+  continueChapterBtn.textContent = isBusy ? "续写中..." : "续写完整章";
+}
+
 function formatTime(timeMs) {
   return new Date(timeMs).toLocaleTimeString("zh-CN", { hour12: false });
 }
@@ -585,6 +693,12 @@ function safeFileName(name) {
     .trim();
 
   return cleaned || "novel";
+}
+
+function clampInt(value, min, max, fallback) {
+  const parsed = Number.parseInt(String(value), 10);
+  if (Number.isNaN(parsed)) return fallback;
+  return Math.min(max, Math.max(min, parsed));
 }
 
 function buildNovelText(targetProject) {

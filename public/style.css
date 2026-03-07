@@ -82,6 +82,10 @@ h2 {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.grid-4 {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
 .grid-2 {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
@@ -223,7 +227,7 @@ button.danger {
 }
 
 #editor {
-  min-height: 52vh;
+  min-height: 62vh;
   font-size: 18px;
   position: relative;
   z-index: 1;
@@ -250,16 +254,39 @@ button.danger {
 
 .hint-row {
   min-height: 24px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  justify-content: space-between;
   color: var(--muted);
   font-size: 14px;
 }
 
 #suggestionPreview {
   display: inline-block;
-  max-width: 100%;
+  max-width: 60%;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.hint-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.target-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+#chapterTargetChars {
+  width: 120px;
+  height: 34px;
 }
 
 @media (max-width: 1060px) {
@@ -272,11 +299,12 @@ button.danger {
   }
 
   #editor {
-    min-height: 46vh;
+    min-height: 56vh;
   }
 }
 
 @media (max-width: 820px) {
+  .grid-4,
   .grid-3,
   .grid-2 {
     grid-template-columns: 1fr;
@@ -288,5 +316,14 @@ button.danger {
 
   .top-right {
     justify-items: start;
+  }
+
+  .hint-row {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  #suggestionPreview {
+    max-width: 100%;
   }
 }

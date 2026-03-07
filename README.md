@@ -5,6 +5,7 @@
 ## Features
 
 - `Tab` 接受补全，`Esc` 取消，`Ctrl + Space` 手动触发
+- 一键“续写完整章”（独立模型，不与 Tab 模型共用）
 - 段落级上下文记忆（光标前后段落）
 - 人物设定（全书）+ 章节设定（当前章）
 - 分章节存储（新建、切换、删除）
@@ -61,8 +62,12 @@ Open `http://localhost:3000`.
 | `LLM_BASE_URL` | No | `https://api.openai.com/v1` | Upstream API base URL |
 | `LLM_API_KEY` | No | empty | Server-side API key fallback |
 | `LLM_MODEL` | No | `gpt-4o-mini` | Default model name |
+| `LLM_TAB_MODEL` | No | `gpt-4o-mini` | Tab completion model |
+| `LLM_CHAPTER_MODEL` | No | `gpt-4.1-mini` | Full chapter continuation model |
 | `LLM_MAX_TOKENS` | No | `80` | Max generated tokens |
 | `LLM_TEMPERATURE` | No | `0.8` | Sampling temperature |
+| `LLM_CHAPTER_MAX_TOKENS` | No | `1600` | Max tokens for full chapter continuation |
+| `LLM_CHAPTER_TEMPERATURE` | No | `0.9` | Temperature for full chapter continuation |
 | `CONTEXT_CHARS` | No | `3000` | Max context chars before cursor |
 | `LLM_SYSTEM_PROMPT` | No | built-in | System prompt override |
 
@@ -72,8 +77,9 @@ Open `http://localhost:3000`.
 2. 在右侧填写小说标题、人物设定、章节设定。
 3. 在正文编辑区写作，系统会自动生成补全建议。
 4. 按 `Tab` 接受建议。
-5. 使用导出按钮下载整本 `TXT` 或 `MD`。
-6. 使用“打开文件夹”后可“导出到文件夹”或“从文件夹导入”。
+5. 点击“续写完整章”生成长段内容并插入当前光标位置。
+6. 使用导出按钮下载整本 `TXT` 或 `MD`。
+7. 使用“打开文件夹”后可“导出到文件夹”或“从文件夹导入”。
 
 ### Keyboard Shortcuts
 
@@ -129,6 +135,32 @@ Response:
 ### `GET /api/default-config`
 
 返回服务端默认配置（不会返回明文 key）。
+
+### `POST /api/continue-chapter`
+
+Request body:
+
+```json
+{
+  "context": "光标前正文",
+  "apiBaseUrl": "https://api.openai.com/v1",
+  "apiKey": "sk-xxx",
+  "chapterModel": "gpt-4.1-mini",
+  "targetChars": 1200,
+  "novelTitle": "雾海城",
+  "chapterTitle": "第一章 雨夜来信",
+  "chapterSetting": "本章目标与冲突",
+  "characterSetting": "人物关系与说话风格"
+}
+```
+
+Response:
+
+```json
+{
+  "content": "整章续写正文"
+}
+```
 
 ### `GET /api/health`
 

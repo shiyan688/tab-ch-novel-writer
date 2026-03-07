@@ -14,8 +14,9 @@ const defaultConfig = {
   apiBaseUrl: trimTrailingSlash(
     process.env.LLM_BASE_URL || "https://api.openai.com/v1"
   ),
-  model: process.env.LLM_MODEL || "gpt-4o-mini",
-  systemPrompt:
+  tabModel: process.env.LLM_TAB_MODEL || process.env.LLM_MODEL || "gpt-4o-mini",
+  chapterModel: process.env.LLM_CHAPTER_MODEL || "gpt-4.1-mini",
+  tabSystemPrompt:
     process.env.LLM_SYSTEM_PROMPT ||
     [
       "You are an assistant for Chinese novel continuation.",
@@ -25,12 +26,24 @@ const defaultConfig = {
       "3) Continue naturally and avoid repeating the context.",
       "4) Keep it concise, normally 1-2 sentences."
     ].join("\n"),
-  maxTokens: clampInt(process.env.LLM_MAX_TOKENS, 10, 300, 80),
-  temperature: clampFloat(process.env.LLM_TEMPERATURE, 0, 2, 0.8),
+  chapterSystemPrompt:
+    process.env.LLM_CHAPTER_SYSTEM_PROMPT ||
+    [
+      "You are an assistant for long-form Chinese fiction writing.",
+      "Rules:",
+      "1) Continue the chapter from the given context.",
+      "2) Keep consistency with character and chapter notes.",
+      "3) Output only正文内容, no title, no explanation.",
+      "4) Keep narrative coherent and readable."
+    ].join("\n"),
+  tabMaxTokens: clampInt(process.env.LLM_MAX_TOKENS, 10, 300, 80),
+  tabTemperature: clampFloat(process.env.LLM_TEMPERATURE, 0, 2, 0.8),
+  chapterMaxTokens: clampInt(process.env.LLM_CHAPTER_MAX_TOKENS, 200, 4000, 1600),
+  chapterTemperature: clampFloat(process.env.LLM_CHAPTER_TEMPERATURE, 0, 2, 0.9),
   contextChars: clampInt(process.env.CONTEXT_CHARS, 300, 8000, 3000)
 };
 
-app.use(express.json({ limit: "1mb" }));
+app.use(express.json({ limit: "2mb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
 app.get("/api/health", (_req, res) => {
@@ -40,9 +53,13 @@ app.get("/api/health", (_req, res) => {
 app.get("/api/default-config", (_req, res) => {
   res.json({
     apiBaseUrl: defaultConfig.apiBaseUrl,
-    model: defaultConfig.model,
-    temperature: defaultConfig.temperature,
-    maxTokens: defaultConfig.maxTokens,
+    model: defaultConfig.tabModel,
+    tabModel: defaultConfig.tabModel,
+    chapterModel: defaultConfig.chapterModel,
+    temperature: defaultConfig.tabTemperature,
+    maxTokens: defaultConfig.tabMaxTokens,
+    chapterTemperature: defaultConfig.chapterTemperature,
+    chapterMaxTokens: defaultConfig.chapterMaxTokens,
     contextChars: defaultConfig.contextChars,
     hasServerApiKey: Boolean(process.env.LLM_API_KEY)
   });
@@ -54,6 +71,7 @@ app.post("/api/complete", async (req, res) => {
     apiBaseUrl,
     apiKey,
     model,
+    tabModel,
     temperature,
     maxTokens,
     systemPrompt,
@@ -77,13 +95,17 @@ app.post("/api/complete", async (req, res) => {
   const finalApiKey =
     typeof apiKey === "string" && apiKey.trim() ? apiKey.trim() : process.env.LLM_API_KEY;
   const finalModel =
-    typeof model === "string" && model.trim() ? model.trim() : defaultConfig.model;
-  const finalTemperature = clampFloat(temperature, 0, 2, defaultConfig.temperature);
-  const finalMaxTokens = clampInt(maxTokens, 10, 300, defaultConfig.maxTokens);
+    typeof tabModel === "string" && tabModel.trim()
+      ? tabModel.trim()
+      : typeof model === "string" && model.trim()
+        ? model.trim()
+        : defaultConfig.tabModel;
+  const finalTemperature = clampFloat(temperature, 0, 2, defaultConfig.tabTemperature);
+  const finalMaxTokens = clampInt(maxTokens, 10, 300, defaultConfig.tabMaxTokens);
   const finalSystemPrompt =
     typeof systemPrompt === "string" && systemPrompt.trim()
       ? systemPrompt
-      : defaultConfig.systemPrompt;
+      : defaultConfig.tabSystemPrompt;
 
   if (!finalApiKey) {
     res.status(400).json({
@@ -143,6 +165,112 @@ app.post("/api/complete", async (req, res) => {
   }
 });
 
+app.post("/api/continue-chapter", async (req, res) => {
+  const {
+    context,
+    apiBaseUrl,
+    apiKey,
+    chapterModel,
+    model,
+    temperature,
+    maxTokens,
+    systemPrompt,
+    targetChars,
+    novelTitle,
+    chapterTitle,
+    chapterSetting,
+    characterSetting
+  } = req.body || {};
+
+  const safeContext = typeof context === "string" ? context : "";
+  const safeChapterSetting = typeof chapterSetting === "string" ? chapterSetting : "";
+  const safeCharacterSetting = typeof characterSetting === "string" ? characterSetting : "";
+
+  if (!safeContext.trim() && !safeChapterSetting.trim() && !safeCharacterSetting.trim()) {
+    res.status(400).json({ error: "context or setting is required" });
+    return;
+  }
+
+  const finalApiBaseUrl = trimTrailingSlash(
+    typeof apiBaseUrl === "string" && apiBaseUrl.trim()
+      ? apiBaseUrl
+      : defaultConfig.apiBaseUrl
+  );
+  const finalApiKey =
+    typeof apiKey === "string" && apiKey.trim() ? apiKey.trim() : process.env.LLM_API_KEY;
+  const finalModel =
+    typeof chapterModel === "string" && chapterModel.trim()
+      ? chapterModel.trim()
+      : typeof model === "string" && model.trim()
+        ? model.trim()
+        : defaultConfig.chapterModel;
+  const finalTemperature = clampFloat(temperature, 0, 2, defaultConfig.chapterTemperature);
+  const finalTargetChars = clampInt(targetChars, 300, 5000, 1200);
+  const inferredMaxTokens = estimateChapterMaxTokens(finalTargetChars, defaultConfig.chapterMaxTokens);
+  const finalMaxTokens = clampInt(maxTokens, 200, 4000, inferredMaxTokens);
+  const finalSystemPrompt =
+    typeof systemPrompt === "string" && systemPrompt.trim()
+      ? systemPrompt
+      : defaultConfig.chapterSystemPrompt;
+
+  if (!finalApiKey) {
+    res.status(400).json({
+      error:
+        "API key is missing. Provide apiKey in request body or set LLM_API_KEY in .env"
+    });
+    return;
+  }
+
+  const completionUrl = `${finalApiBaseUrl}/chat/completions`;
+  const userMessage = buildChapterUserMessage({
+    context: safeContext,
+    novelTitle,
+    chapterTitle,
+    chapterSetting: safeChapterSetting,
+    characterSetting: safeCharacterSetting,
+    targetChars: finalTargetChars
+  });
+
+  try {
+    const upstream = await fetch(completionUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${finalApiKey}`
+      },
+      body: JSON.stringify({
+        model: finalModel,
+        temperature: finalTemperature,
+        max_tokens: finalMaxTokens,
+        messages: [
+          { role: "system", content: finalSystemPrompt },
+          { role: "user", content: userMessage }
+        ]
+      })
+    });
+
+    const text = await upstream.text();
+    const data = tryParseJson(text);
+
+    if (!upstream.ok) {
+      const detail =
+        data?.error?.message ||
+        data?.message ||
+        text ||
+        `Upstream error (${upstream.status})`;
+      res.status(upstream.status).json({ error: detail });
+      return;
+    }
+
+    const content = normalizeLongContent(data?.choices?.[0]?.message?.content || "");
+    res.json({ content });
+  } catch (err) {
+    res.status(500).json({
+      error: err instanceof Error ? err.message : "Unknown server error"
+    });
+  }
+});
+
 app.get("*", (_req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
 });
@@ -183,6 +311,28 @@ function buildUserMessage(payload) {
   return sections.join("\n\n");
 }
 
+function buildChapterUserMessage(payload) {
+  const safeContext = safeText(payload.context, 16000);
+  const safeNovelTitle = safeText(payload.novelTitle, 120);
+  const safeChapterTitle = safeText(payload.chapterTitle, 120);
+  const safeChapterSetting = safeText(payload.chapterSetting, 2000);
+  const safeCharacterSetting = safeText(payload.characterSetting, 2000);
+  const safeTargetChars = clampInt(payload.targetChars, 300, 5000, 1200);
+
+  const sections = [
+    "The user is writing a full chapter in Chinese. Continue from cursor position.",
+    safeNovelTitle ? `Novel Title:\n${safeNovelTitle}` : "",
+    safeChapterTitle ? `Chapter Title:\n${safeChapterTitle}` : "",
+    safeCharacterSetting ? `Character Notes:\n${safeCharacterSetting}` : "",
+    safeChapterSetting ? `Chapter Notes:\n${safeChapterSetting}` : "",
+    safeContext ? `Existing Content Before Cursor:\n${safeContext}` : "",
+    `Target Length: around ${safeTargetChars} Chinese characters.`,
+    "Write only continuation prose in Chinese. Keep coherence and avoid re-printing any title."
+  ].filter(Boolean);
+
+  return sections.join("\n\n");
+}
+
 function trimTrailingSlash(value) {
   return String(value).replace(/\/+$/, "");
 }
@@ -211,6 +361,13 @@ function normalizeSuggestion(raw) {
   return String(raw).replace(/\r/g, "").trim().slice(0, 240);
 }
 
+function normalizeLongContent(raw) {
+  return String(raw)
+    .replace(/\r/g, "")
+    .trim()
+    .slice(0, 24000);
+}
+
 function safeText(value, maxLen) {
   if (typeof value !== "string") return "";
   return value.replace(/\r/g, "").trim().slice(0, maxLen);
@@ -222,4 +379,10 @@ function normalizeParagraphArray(value, maxItems) {
     .map((item) => safeText(item, 360))
     .filter(Boolean)
     .slice(-maxItems);
+}
+
+function estimateChapterMaxTokens(targetChars, fallback) {
+  const safeTarget = clampInt(targetChars, 300, 5000, 1200);
+  const estimated = Math.ceil(safeTarget * 1.5);
+  return clampInt(estimated, 200, 4000, fallback);
 }
