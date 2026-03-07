@@ -10,6 +10,74 @@ const port = Number(process.env.PORT || 3000);
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+const WEBNOVEL_STYLE_PROMPT = `你是一名擅长番茄网文风格的中文小说写作助手。请按照商业网文的阅读习惯进行创作，要求正文流畅、节奏清晰、情节推进明确、情绪表达直接有效，保证读者容易读下去。
+
+写作时遵循以下规则：
+
+1. 以“剧情推进”和“情绪推动”为核心，避免空泛抒情。
+2. 句子尽量简洁，少写绕弯的长句，少堆叠形容词和副词。
+3. 不要对同一个动作、表情、场景、物品进行重复修饰。
+4. 不要连续使用多个近义词形容同一对象。
+5. 少用破折号进行补充解释，尽量直接叙述。
+6. 少用“不是……而是……”这类刻意转折句式。
+7. 对话要符合人物身份，短而有力，避免人人都像在讲道理。
+8. 场景描写服务于剧情，不要为了描写而描写。
+9. 每一段都应有信息增量、情绪变化或动作变化。
+10. 保持网文感，增强可读性和继续阅读欲望。
+
+语言风格要求：
+- 叙述直给，不卖弄辞藻
+- 节奏明快，重点突出
+- 情绪到位，但不过度堆砌
+- 适度口语化，适合连载阅读
+- 保持爽点、悬念、反转、压迫感或期待感
+
+请直接输出正文，不要解释，不要分析，不要分点，不要写创作说明。
+正文要有明确的网文叙事感：
+
+- 开头尽快给出冲突、异常、危机、压迫、好处或悬念
+- 中间持续推进，不停留在原地空转
+- 段落短一些，视觉上轻快，方便读者快速扫读
+- 多写人物的即时反应、选择和后果
+- 少写空洞感慨，多写可见动作与有效信息
+- 情绪表达要直接，让读者能立刻感受到紧张、爽快、愤怒、期待、恐惧或压抑
+- 每个小段尽量承担一个明确功能：推进剧情、制造悬念、强化人物、抬高冲突、释放信息
+- 注重“钩子”，段尾和章尾尽量留有继续读下去的动力
+- 能一句说清的，不要扩成三句
+- 能用动作体现的，不要反复用抽象形容词说明
+
+禁止或尽量避免以下问题：
+
+1. 不要对同一动作进行重复修饰。
+2. 不要对同一人物的神态、目光、语气连续使用多个近义描述。
+3. 不要对同一事物进行两次以上功能相近的描写。
+4. 不要堆砌形容词、副词，不要为了显得有文采而拖慢节奏。
+5. 不要频繁使用破折号补充解释。
+6. 不要频繁使用“不是……而是……”“并非……而是……”这类句式。
+7. 不要连续使用排比、反问、感叹来强行制造气势。
+8. 不要让人物说话像作者在发议论。
+9. 不要出现自我重复的句子、意思相近的句子或换词重复。
+10. 不要大段静态描写，不要大段空洞心理描写。
+11. 不要无意义地渲染气氛，所有描写都应服务于人物、冲突和情节。
+12. 不要让句式过于整齐，避免机械感。
+13. 不要频繁使用“此刻、这一刻、下一瞬、紧接着、旋即”等重复连接词。
+14. 不要连续写“他看着……他盯着……他望着……”这类重复动作。
+15. 不要在一句话里给同一对象添加多个方向相近的修饰语。`;
+
+const TAB_SYSTEM_PROMPT_DEFAULT = `${WEBNOVEL_STYLE_PROMPT}
+
+补充要求（Tab 行内补全）：
+1. 你只需要补全紧接光标处的后续内容。
+2. 输出长度控制在 1-2 句，优先短句。
+3. 只输出可直接插入正文的内容，不要重复上文。`;
+
+const CHAPTER_SYSTEM_PROMPT_DEFAULT = `${WEBNOVEL_STYLE_PROMPT}
+
+补充要求（整章续写）：
+1. 根据上下文持续推进情节，保证完整章内有起伏、有推进。
+2. 保持人物行为和设定一致，避免跳脱。
+3. 只输出正文内容，不要标题、说明或分点。`;
+
 const defaultConfig = {
   apiBaseUrl: trimTrailingSlash(
     process.env.LLM_BASE_URL || "https://api.openai.com/v1"
@@ -17,25 +85,9 @@ const defaultConfig = {
   tabModel: process.env.LLM_TAB_MODEL || process.env.LLM_MODEL || "gpt-4o-mini",
   chapterModel: process.env.LLM_CHAPTER_MODEL || "gpt-4.1-mini",
   tabSystemPrompt:
-    process.env.LLM_SYSTEM_PROMPT ||
-    [
-      "You are an assistant for Chinese novel continuation.",
-      "Rules:",
-      "1) Output only continuation text, no explanation.",
-      "2) Keep style and tense consistent with context.",
-      "3) Continue naturally and avoid repeating the context.",
-      "4) Keep it concise, normally 1-2 sentences."
-    ].join("\n"),
+    process.env.LLM_SYSTEM_PROMPT || TAB_SYSTEM_PROMPT_DEFAULT,
   chapterSystemPrompt:
-    process.env.LLM_CHAPTER_SYSTEM_PROMPT ||
-    [
-      "You are an assistant for long-form Chinese fiction writing.",
-      "Rules:",
-      "1) Continue the chapter from the given context.",
-      "2) Keep consistency with character and chapter notes.",
-      "3) Output only正文内容, no title, no explanation.",
-      "4) Keep narrative coherent and readable."
-    ].join("\n"),
+    process.env.LLM_CHAPTER_SYSTEM_PROMPT || CHAPTER_SYSTEM_PROMPT_DEFAULT,
   tabMaxTokens: clampInt(process.env.LLM_MAX_TOKENS, 10, 300, 80),
   tabTemperature: clampFloat(process.env.LLM_TEMPERATURE, 0, 2, 0.8),
   chapterMaxTokens: clampInt(process.env.LLM_CHAPTER_MAX_TOKENS, 200, 4000, 1600),
@@ -289,23 +341,23 @@ function buildUserMessage(payload) {
   const afterParagraphs = normalizeParagraphArray(payload.paragraphMemory?.after, 2);
 
   const sections = [
-    "The user is writing a Chinese novel. Continue from cursor position.",
-    safeNovelTitle ? `Novel Title:\n${safeNovelTitle}` : "",
-    safeChapterTitle ? `Chapter Title:\n${safeChapterTitle}` : "",
-    safeCharacterSetting ? `Character Notes:\n${safeCharacterSetting}` : "",
-    safeChapterSetting ? `Chapter Notes:\n${safeChapterSetting}` : "",
+    "请根据以下信息在光标处续写。",
+    safeNovelTitle ? `小说标题：\n${safeNovelTitle}` : "",
+    safeChapterTitle ? `章节标题：\n${safeChapterTitle}` : "",
+    safeCharacterSetting ? `人物设定：\n${safeCharacterSetting}` : "",
+    safeChapterSetting ? `章节设定：\n${safeChapterSetting}` : "",
     beforeParagraphs.length
-      ? `Paragraph Memory (before cursor):\n${beforeParagraphs
+      ? `光标前段落记忆：\n${beforeParagraphs
           .map((item, index) => `${index + 1}. ${item}`)
           .join("\n")}`
       : "",
     afterParagraphs.length
-      ? `Paragraph Memory (after cursor):\n${afterParagraphs
+      ? `光标后段落记忆：\n${afterParagraphs
           .map((item, index) => `${index + 1}. ${item}`)
           .join("\n")}`
       : "",
-    `Context Before Cursor:\n${safeContext}`,
-    "Write only continuation text in Chinese, up to 2 sentences."
+    `光标前正文：\n${safeContext}`,
+    "请直接续写，不超过两句话。"
   ].filter(Boolean);
 
   return sections.join("\n\n");
@@ -320,14 +372,14 @@ function buildChapterUserMessage(payload) {
   const safeTargetChars = clampInt(payload.targetChars, 300, 5000, 1200);
 
   const sections = [
-    "The user is writing a full chapter in Chinese. Continue from cursor position.",
-    safeNovelTitle ? `Novel Title:\n${safeNovelTitle}` : "",
-    safeChapterTitle ? `Chapter Title:\n${safeChapterTitle}` : "",
-    safeCharacterSetting ? `Character Notes:\n${safeCharacterSetting}` : "",
-    safeChapterSetting ? `Chapter Notes:\n${safeChapterSetting}` : "",
-    safeContext ? `Existing Content Before Cursor:\n${safeContext}` : "",
-    `Target Length: around ${safeTargetChars} Chinese characters.`,
-    "Write only continuation prose in Chinese. Keep coherence and avoid re-printing any title."
+    "请根据以下信息续写完整章节内容。",
+    safeNovelTitle ? `小说标题：\n${safeNovelTitle}` : "",
+    safeChapterTitle ? `章节标题：\n${safeChapterTitle}` : "",
+    safeCharacterSetting ? `人物设定：\n${safeCharacterSetting}` : "",
+    safeChapterSetting ? `章节设定：\n${safeChapterSetting}` : "",
+    safeContext ? `已有正文（光标前）：\n${safeContext}` : "",
+    `目标长度：约 ${safeTargetChars} 字。`,
+    "请直接输出续写正文。"
   ].filter(Boolean);
 
   return sections.join("\n\n");
