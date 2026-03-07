@@ -1,0 +1,104 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>中文小说写作器</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <main class="app">
+      <header class="top">
+        <div>
+          <h1>中文小说写作器</h1>
+          <p>Tab 接受补全，Esc 取消，Ctrl + Space 手动触发</p>
+        </div>
+        <div class="top-right">
+          <span id="status">状态：准备中</span>
+          <span id="autosaveInfo">自动保存：未开始</span>
+        </div>
+      </header>
+
+      <section class="panel api-panel">
+        <h2>API 配置</h2>
+        <div class="grid grid-3">
+          <label>
+            API Base URL
+            <input id="apiBaseUrl" type="text" placeholder="https://api.openai.com/v1" />
+          </label>
+          <label>
+            API Key（可留空，使用服务端 .env）
+            <input id="apiKey" type="password" placeholder="sk-..." />
+          </label>
+          <label>
+            Model
+            <input id="model" type="text" placeholder="gpt-4o-mini" />
+          </label>
+        </div>
+        <div class="row-actions">
+          <button id="saveApiConfig" type="button">保存 API 配置</button>
+          <button id="clearApiConfig" type="button" class="ghost">清空 API Key</button>
+        </div>
+      </section>
+
+      <section class="workspace">
+        <aside class="panel sidebar">
+          <h2>章节</h2>
+          <div class="row-actions">
+            <button id="addChapterBtn" type="button">新建章节</button>
+            <button id="deleteChapterBtn" type="button" class="ghost danger">删除当前章节</button>
+          </div>
+          <div id="chapterList" class="chapter-list"></div>
+
+          <h2 class="export-title">导出与文件夹</h2>
+          <div class="grid export-grid">
+            <button id="exportTxtBtn" type="button">导出 TXT</button>
+            <button id="exportMdBtn" type="button">导出 MD</button>
+            <button id="chooseFolderBtn" type="button" class="ghost">打开文件夹</button>
+            <button id="exportFolderBtn" type="button" class="ghost">导出到文件夹</button>
+            <button id="importFolderBtn" type="button" class="ghost">从文件夹导入</button>
+          </div>
+          <div id="folderInfo" class="folder-info">文件夹：未选择</div>
+        </aside>
+
+        <section class="panel editor-wrap">
+          <div class="grid grid-2">
+            <label>
+              小说标题
+              <input id="novelTitle" type="text" placeholder="例如：雾海城" />
+            </label>
+            <label>
+              章节标题
+              <input id="chapterTitle" type="text" placeholder="例如：第一章 雨夜来信" />
+            </label>
+          </div>
+
+          <div class="grid grid-2 notes-grid">
+            <label>
+              人物设定（全书记忆）
+              <textarea id="characterSetting" class="mini-area" placeholder="主角背景、人物关系、说话风格..." spellcheck="false"></textarea>
+            </label>
+            <label>
+              章节设定（当前章记忆）
+              <textarea id="chapterSetting" class="mini-area" placeholder="本章目标、冲突、线索、情绪..." spellcheck="false"></textarea>
+            </label>
+          </div>
+
+          <label class="editor-label">
+            正文
+            <textarea
+              id="editor"
+              spellcheck="false"
+              placeholder="在这里写小说，停顿后会自动给出续写建议..."
+            ></textarea>
+          </label>
+
+          <div class="hint-row">
+            <span id="suggestionPreview"></span>
+          </div>
+        </section>
+      </section>
+    </main>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
