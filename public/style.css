@@ -117,6 +117,7 @@ input {
 }
 
 textarea {
+  width: 100%;
   padding: 10px 12px;
   line-height: 1.75;
   resize: vertical;
@@ -227,10 +228,12 @@ button.danger {
 }
 
 #editor {
-  min-height: 62vh;
+  height: clamp(520px, 72vh, 920px);
+  min-height: 520px;
   font-size: 18px;
   position: relative;
   z-index: 1;
+  resize: vertical;
 }
 
 .ghost-suggestion {
@@ -299,7 +302,8 @@ button.danger {
   }
 
   #editor {
-    min-height: 56vh;
+    height: clamp(420px, 65vh, 760px);
+    min-height: 420px;
   }
 }
 
@@ -325,5 +329,10 @@ button.danger {
 
   #suggestionPreview {
     max-width: 100%;
+  }
+
+  #editor {
+    height: clamp(360px, 58vh, 620px);
+    min-height: 360px;
   }
 }
