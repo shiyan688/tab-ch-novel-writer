@@ -15,7 +15,9 @@ const novelTitleInput = document.getElementById("novelTitle");
 const chapterTitleInput = document.getElementById("chapterTitle");
 const characterSettingInput = document.getElementById("characterSetting");
 const chapterSettingInput = document.getElementById("chapterSetting");
+const editorStack = document.getElementById("editorStack");
 const editor = document.getElementById("editor");
+const ghostSuggestionEl = document.getElementById("ghostSuggestion");
 
 const addChapterBtn = document.getElementById("addChapterBtn");
 const deleteChapterBtn = document.getElementById("deleteChapterBtn");
@@ -105,6 +107,11 @@ function bindEvents() {
   });
 
   editor.addEventListener("click", clearSuggestion);
+  editor.addEventListener("scroll", () => {
+    if (suggestion) {
+      renderSuggestion();
+    }
+  });
   editor.addEventListener("keyup", (event) => {
     if (
       event.key === "ArrowLeft" ||
@@ -210,6 +217,12 @@ function bindEvents() {
   importFolderBtn.addEventListener("click", async () => {
     await importFromFolder();
   });
+
+  window.addEventListener("resize", () => {
+    if (suggestion) {
+      renderSuggestion();
+    }
+  });
 }
 
 function createDefaultProject() {
@@ -275,6 +288,7 @@ function renderCurrentChapter() {
   chapterTitleInput.value = chapter.title || "";
   chapterSettingInput.value = chapter.setting || "";
   editor.value = chapter.content || "";
+  clearSuggestion();
 }
 
 function queueAutosave() {
@@ -536,6 +550,24 @@ function clearSuggestion() {
 
 function renderSuggestion() {
   suggestionPreviewEl.textContent = suggestion ? `建议：${suggestion}` : "";
+
+  if (!suggestion) {
+    hideGhostSuggestion();
+    return;
+  }
+
+  const caret = getCaretCoordinates(editor, editor.selectionStart);
+  const style = window.getComputedStyle(editor);
+  const paddingRight = Number.parseFloat(style.paddingRight) || 12;
+  const left = Math.max(0, Math.round(caret.left));
+  const top = Math.max(0, Math.round(caret.top));
+  const maxWidth = Math.max(80, editor.clientWidth - left - paddingRight);
+
+  ghostSuggestionEl.textContent = suggestion;
+  ghostSuggestionEl.style.left = `${left}px`;
+  ghostSuggestionEl.style.top = `${top}px`;
+  ghostSuggestionEl.style.maxWidth = `${maxWidth}px`;
+  ghostSuggestionEl.classList.add("visible");
 }
 
 function setStatus(text) {
@@ -850,4 +882,74 @@ async function writeTextFile(directoryHandle, name, content) {
   const writable = await fileHandle.createWritable();
   await writable.write(content);
   await writable.close();
+}
+
+function hideGhostSuggestion() {
+  ghostSuggestionEl.classList.remove("visible");
+  ghostSuggestionEl.textContent = "";
+}
+
+function getCaretCoordinates(textarea, position) {
+  const mirror = document.createElement("div");
+  const computed = window.getComputedStyle(textarea);
+
+  const properties = [
+    "boxSizing",
+    "width",
+    "height",
+    "overflowX",
+    "overflowY",
+    "borderTopWidth",
+    "borderRightWidth",
+    "borderBottomWidth",
+    "borderLeftWidth",
+    "paddingTop",
+    "paddingRight",
+    "paddingBottom",
+    "paddingLeft",
+    "fontStyle",
+    "fontVariant",
+    "fontWeight",
+    "fontStretch",
+    "fontSize",
+    "lineHeight",
+    "fontFamily",
+    "textAlign",
+    "textTransform",
+    "textIndent",
+    "textDecoration",
+    "letterSpacing",
+    "wordSpacing",
+    "tabSize",
+    "whiteSpace"
+  ];
+
+  mirror.style.position = "absolute";
+  mirror.style.visibility = "hidden";
+  mirror.style.left = "-9999px";
+  mirror.style.top = "0";
+  mirror.style.whiteSpace = "pre-wrap";
+  mirror.style.wordBreak = "break-word";
+  mirror.style.overflow = "hidden";
+
+  properties.forEach((prop) => {
+    mirror.style[prop] = computed[prop];
+  });
+
+  mirror.textContent = textarea.value.slice(0, position);
+
+  if (mirror.textContent.endsWith("\n")) {
+    mirror.textContent += " ";
+  }
+
+  const marker = document.createElement("span");
+  marker.textContent = textarea.value.slice(position) || "\u200b";
+  mirror.appendChild(marker);
+
+  document.body.appendChild(mirror);
+  const left = marker.offsetLeft - textarea.scrollLeft;
+  const top = marker.offsetTop - textarea.scrollTop;
+  document.body.removeChild(mirror);
+
+  return { left, top };
 }

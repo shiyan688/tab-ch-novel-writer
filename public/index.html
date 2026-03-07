@@ -86,11 +86,14 @@
 
           <label class="editor-label">
             正文
-            <textarea
-              id="editor"
-              spellcheck="false"
-              placeholder="在这里写小说，停顿后会自动给出续写建议..."
-            ></textarea>
+            <div class="editor-stack" id="editorStack">
+              <textarea
+                id="editor"
+                spellcheck="false"
+                placeholder="在这里写小说，停顿后会自动给出续写建议..."
+              ></textarea>
+              <div id="ghostSuggestion" class="ghost-suggestion"></div>
+            </div>
           </label>
 
           <div class="hint-row">

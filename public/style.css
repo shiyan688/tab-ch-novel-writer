@@ -218,9 +218,34 @@ button.danger {
   margin-top: 2px;
 }
 
+.editor-stack {
+  position: relative;
+}
+
 #editor {
   min-height: 52vh;
   font-size: 18px;
+  position: relative;
+  z-index: 1;
+}
+
+.ghost-suggestion {
+  position: absolute;
+  z-index: 2;
+  pointer-events: none;
+  color: rgb(47 41 35 / 38%);
+  opacity: 0;
+  visibility: hidden;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.75;
+  font-size: 18px;
+  max-width: calc(100% - 24px);
+}
+
+.ghost-suggestion.visible {
+  opacity: 1;
+  visibility: visible;
 }
 
 .hint-row {
