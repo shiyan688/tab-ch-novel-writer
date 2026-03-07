@@ -153,24 +153,7 @@ Response:
 - `.env` 已在 `.gitignore` 中忽略，请只提交 `.env.example`。
 - 如果在前端输入 API Key，请仅在受信任环境使用。
 
-## Publish to GitHub
 
-如果你想把本项目发布到 GitHub，可参考：
-
-```bash
-git init
-git add .
-git commit -m "feat: initial release of novel editor"
-git branch -M main
-git remote add origin https://github.com/<your-name>/<repo>.git
-git push -u origin main
-```
-
-建议补充：
-
-- `LICENSE`（如 MIT）
-- 仓库 Topics（如 `novel`, `llm`, `autocomplete`, `writing-tool`）
-- Release 说明与截图
 
 ## FAQ
 
@@ -193,3 +176,4 @@ git push -u origin main
 ## License
 
 当前仓库未附带许可证。若计划公开分发，建议添加 `MIT` 或其他合适许可证。
+
