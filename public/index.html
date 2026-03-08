@@ -104,6 +104,7 @@
             <span id="suggestionPreview"></span>
             <div class="hint-actions">
               <button id="autoTabToggleBtn" type="button" class="ghost">自动 Tab：关</button>
+              <button id="tabSettingsToggleBtn" type="button" class="ghost">Tab 设置</button>
               <label class="target-label">
                 整章续写字数
                 <input id="chapterTargetChars" type="number" min="300" max="5000" step="100" value="1200" />
@@ -111,6 +112,32 @@
               <button id="continueChapterBtn" type="button">续写完整章</button>
             </div>
           </div>
+
+          <section id="tabSettingsPanel" class="tab-settings-panel hidden">
+            <h3>Tab 补全设置</h3>
+            <div class="grid grid-4">
+              <label>
+                max_tokens（48-64）
+                <input id="tabMaxTokensInput" type="number" min="48" max="64" step="1" />
+              </label>
+              <label>
+                输入停顿（毫秒）
+                <input id="tabInputPauseMsInput" type="number" min="300" max="3000" step="100" />
+              </label>
+              <label>
+                自动请求最小间隔（毫秒）
+                <input id="tabAutoMinIntervalMsInput" type="number" min="1000" max="30000" step="500" />
+              </label>
+              <label>
+                每分钟最多自动请求（次）
+                <input id="tabAutoMaxPerMinuteInput" type="number" min="1" max="30" step="1" />
+              </label>
+            </div>
+            <div class="row-actions">
+              <button id="saveTabSettingsBtn" type="button">保存 Tab 设置</button>
+              <button id="resetTabSettingsBtn" type="button" class="ghost">恢复默认</button>
+            </div>
+          </section>
         </section>
       </section>
     </main>

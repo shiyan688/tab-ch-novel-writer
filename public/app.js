@@ -1,14 +1,17 @@
 ﻿const API_CONFIG_KEY = "novel-editor-api-config-v2";
 const PROJECT_STORAGE_KEY = "novel-editor-project-v2";
 const AUTO_TAB_ENABLED_KEY = "novel-editor-auto-tab-enabled-v1";
+const TAB_SETTINGS_KEY = "novel-editor-tab-settings-v1";
 const AUTOSAVE_MS = 600;
-const COMPLETION_DEBOUNCE_MS = 900;
 const MIN_CONTEXT_LENGTH = 8;
 const MAX_CONTEXT_CHARS = 3000;
-const TAB_MAX_TOKENS = 56;
-const AUTO_MIN_INTERVAL_MS = 6000;
-const AUTO_MAX_PER_MINUTE = 5;
 const AUTO_WINDOW_MS = 60 * 1000;
+const DEFAULT_TAB_SETTINGS = {
+  maxTokens: 56,
+  inputPauseMs: 900,
+  autoMinIntervalMs: 6000,
+  autoMaxPerMinute: 5
+};
 
 const apiBaseUrlInput = document.getElementById("apiBaseUrl");
 const apiKeyInput = document.getElementById("apiKey");
@@ -42,6 +45,14 @@ const folderInfoEl = document.getElementById("folderInfo");
 const chapterTargetCharsInput = document.getElementById("chapterTargetChars");
 const continueChapterBtn = document.getElementById("continueChapterBtn");
 const autoTabToggleBtn = document.getElementById("autoTabToggleBtn");
+const tabSettingsToggleBtn = document.getElementById("tabSettingsToggleBtn");
+const tabSettingsPanel = document.getElementById("tabSettingsPanel");
+const tabMaxTokensInput = document.getElementById("tabMaxTokensInput");
+const tabInputPauseMsInput = document.getElementById("tabInputPauseMsInput");
+const tabAutoMinIntervalMsInput = document.getElementById("tabAutoMinIntervalMsInput");
+const tabAutoMaxPerMinuteInput = document.getElementById("tabAutoMaxPerMinuteInput");
+const saveTabSettingsBtn = document.getElementById("saveTabSettingsBtn");
+const resetTabSettingsBtn = document.getElementById("resetTabSettingsBtn");
 
 let project = createDefaultProject();
 let suggestion = "";
@@ -56,6 +67,7 @@ let isComposing = false;
 let lastAutoRequestAt = 0;
 let autoRequestTimestamps = [];
 let lastAutoContextHash = "";
+let tabSettings = { ...DEFAULT_TAB_SETTINGS };
 
 initialize().catch((err) => {
   setStatus(`状态：初始化失败 - ${err.message}`);
@@ -65,6 +77,9 @@ async function initialize() {
   bindEvents();
   loadAutoTabState();
   renderAutoTabToggle();
+  loadTabSettings();
+  renderTabSettingsInputs();
+  renderTabSettingsPanel(false);
   loadApiConfigFromLocal();
   await loadServerDefaults();
   loadProjectFromLocal();
@@ -91,6 +106,30 @@ function bindEvents() {
     persistAutoTabState();
     renderAutoTabToggle();
     setStatus(autoTabEnabled ? "状态：自动 Tab 已开启" : "状态：自动 Tab 已关闭");
+  });
+
+  tabSettingsToggleBtn.addEventListener("click", () => {
+    const isHidden = tabSettingsPanel.classList.contains("hidden");
+    renderTabSettingsPanel(isHidden);
+  });
+
+  saveTabSettingsBtn.addEventListener("click", () => {
+    tabSettings = sanitizeTabSettings({
+      maxTokens: tabMaxTokensInput.value,
+      inputPauseMs: tabInputPauseMsInput.value,
+      autoMinIntervalMs: tabAutoMinIntervalMsInput.value,
+      autoMaxPerMinute: tabAutoMaxPerMinuteInput.value
+    });
+    persistTabSettings();
+    renderTabSettingsInputs();
+    setStatus("状态：Tab 设置已保存");
+  });
+
+  resetTabSettingsBtn.addEventListener("click", () => {
+    tabSettings = { ...DEFAULT_TAB_SETTINGS };
+    persistTabSettings();
+    renderTabSettingsInputs();
+    setStatus("状态：Tab 设置已恢复默认");
   });
 
   continueChapterBtn.addEventListener("click", async () => {
@@ -408,6 +447,60 @@ function renderAutoTabToggle() {
   autoTabToggleBtn.classList.toggle("auto-on", autoTabEnabled);
 }
 
+function loadTabSettings() {
+  const raw = localStorage.getItem(TAB_SETTINGS_KEY);
+  if (!raw) {
+    tabSettings = { ...DEFAULT_TAB_SETTINGS };
+    return;
+  }
+
+  try {
+    tabSettings = sanitizeTabSettings(JSON.parse(raw));
+  } catch {
+    tabSettings = { ...DEFAULT_TAB_SETTINGS };
+  }
+}
+
+function persistTabSettings() {
+  localStorage.setItem(TAB_SETTINGS_KEY, JSON.stringify(tabSettings));
+}
+
+function sanitizeTabSettings(value) {
+  const maxTokens = clampInt(value?.maxTokens, 48, 64, DEFAULT_TAB_SETTINGS.maxTokens);
+  const inputPauseMs = clampInt(
+    value?.inputPauseMs,
+    300,
+    3000,
+    DEFAULT_TAB_SETTINGS.inputPauseMs
+  );
+  const autoMinIntervalMs = clampInt(
+    value?.autoMinIntervalMs,
+    1000,
+    30000,
+    DEFAULT_TAB_SETTINGS.autoMinIntervalMs
+  );
+  const autoMaxPerMinute = clampInt(
+    value?.autoMaxPerMinute,
+    1,
+    30,
+    DEFAULT_TAB_SETTINGS.autoMaxPerMinute
+  );
+
+  return { maxTokens, inputPauseMs, autoMinIntervalMs, autoMaxPerMinute };
+}
+
+function renderTabSettingsInputs() {
+  tabMaxTokensInput.value = String(tabSettings.maxTokens);
+  tabInputPauseMsInput.value = String(tabSettings.inputPauseMs);
+  tabAutoMinIntervalMsInput.value = String(tabSettings.autoMinIntervalMs);
+  tabAutoMaxPerMinuteInput.value = String(tabSettings.autoMaxPerMinute);
+}
+
+function renderTabSettingsPanel(isOpen) {
+  tabSettingsPanel.classList.toggle("hidden", !isOpen);
+  tabSettingsToggleBtn.textContent = isOpen ? "收起设置" : "Tab 设置";
+}
+
 function loadApiConfigFromLocal() {
   const raw = localStorage.getItem(API_CONFIG_KEY);
   if (!raw) return;
@@ -470,7 +563,7 @@ function triggerDebouncedCompletion() {
   clearTimeout(completionDebounceTimer);
   completionDebounceTimer = setTimeout(() => {
     requestCompletion({ reason: "auto" });
-  }, COMPLETION_DEBOUNCE_MS);
+  }, tabSettings.inputPauseMs);
 }
 
 async function requestCompletion(options = {}) {
@@ -509,12 +602,12 @@ async function requestCompletion(options = {}) {
     if (contextHash === lastAutoContextHash) return;
 
     const now = Date.now();
-    if (now - lastAutoRequestAt < AUTO_MIN_INTERVAL_MS) return;
+    if (now - lastAutoRequestAt < tabSettings.autoMinIntervalMs) return;
 
     autoRequestTimestamps = autoRequestTimestamps.filter(
       (item) => now - item < AUTO_WINDOW_MS
     );
-    if (autoRequestTimestamps.length >= AUTO_MAX_PER_MINUTE) return;
+    if (autoRequestTimestamps.length >= tabSettings.autoMaxPerMinute) return;
 
     lastAutoRequestAt = now;
     autoRequestTimestamps.push(now);
@@ -539,7 +632,7 @@ async function requestCompletion(options = {}) {
         apiBaseUrl: apiBaseUrlInput.value.trim(),
         apiKey: apiKeyInput.value.trim(),
         model: modelInput.value.trim(),
-        maxTokens: TAB_MAX_TOKENS,
+        maxTokens: tabSettings.maxTokens,
         novelTitle: project.title,
         chapterTitle: chapter.title,
         chapterSetting: chapter.setting,
