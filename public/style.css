@@ -206,6 +206,35 @@ button.danger {
   font-size: 13px;
 }
 
+.explorer-section {
+  margin-top: 4px;
+  display: grid;
+  gap: 8px;
+}
+
+.explorer-list {
+  display: grid;
+  gap: 6px;
+  max-height: 280px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.explorer-item {
+  height: auto;
+  text-align: left;
+  border: 1px solid var(--line);
+  background: #fcf8ef;
+  color: var(--text);
+  padding: 8px 10px;
+}
+
+.explorer-item.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgb(30 124 109 / 18%);
+  background: #f0faf6;
+}
+
 .editor-wrap {
   display: grid;
   gap: 10px;

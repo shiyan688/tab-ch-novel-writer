@@ -3,9 +3,11 @@ const PROJECT_STORAGE_KEY = "novel-editor-project-v2";
 const AUTO_TAB_ENABLED_KEY = "novel-editor-auto-tab-enabled-v1";
 const TAB_SETTINGS_KEY = "novel-editor-tab-settings-v1";
 const AUTOSAVE_MS = 600;
+const FILE_AUTOSAVE_MS = 700;
 const MIN_CONTEXT_LENGTH = 8;
 const MAX_CONTEXT_CHARS = 3000;
 const AUTO_WINDOW_MS = 60 * 1000;
+const FILE_MEMORY_SUFFIX = ".memory.json";
 const DEFAULT_TAB_SETTINGS = {
   maxTokens: 56,
   inputPauseMs: 900,
@@ -37,6 +39,9 @@ const exportMdBtn = document.getElementById("exportMdBtn");
 const chooseFolderBtn = document.getElementById("chooseFolderBtn");
 const exportFolderBtn = document.getElementById("exportFolderBtn");
 const importFolderBtn = document.getElementById("importFolderBtn");
+const refreshExplorerBtn = document.getElementById("refreshExplorerBtn");
+const explorerSection = document.getElementById("explorerSection");
+const explorerListEl = document.getElementById("explorerList");
 
 const statusEl = document.getElementById("status");
 const autosaveInfoEl = document.getElementById("autosaveInfo");
@@ -62,6 +67,9 @@ let inFlightAbortController = null;
 let chapterAbortController = null;
 let defaultsLoaded = false;
 let selectedFolderHandle = null;
+let fileAutosaveTimer = null;
+let explorerFiles = [];
+let activeFileName = "";
 let autoTabEnabled = false;
 let isComposing = false;
 let lastAutoRequestAt = 0;
@@ -143,7 +151,11 @@ function bindEvents() {
 
   characterSettingInput.addEventListener("input", () => {
     project.characterSetting = characterSettingInput.value;
-    queueAutosave();
+    if (isFileMode()) {
+      queueFileAutosave();
+    } else {
+      queueAutosave();
+    }
     triggerDebouncedCompletion();
   });
 
@@ -159,7 +171,11 @@ function bindEvents() {
     const chapter = getCurrentChapter();
     chapter.setting = chapterSettingInput.value;
     chapter.updatedAt = Date.now();
-    queueAutosave();
+    if (isFileMode()) {
+      queueFileAutosave();
+    } else {
+      queueAutosave();
+    }
     triggerDebouncedCompletion();
   });
 
@@ -168,7 +184,11 @@ function bindEvents() {
     chapter.content = editor.value;
     chapter.updatedAt = Date.now();
     clearSuggestion();
-    queueAutosave();
+    if (isFileMode()) {
+      queueFileAutosave();
+    } else {
+      queueAutosave();
+    }
     triggerDebouncedCompletion();
   });
 
@@ -218,6 +238,7 @@ function bindEvents() {
   });
 
   addChapterBtn.addEventListener("click", () => {
+    deactivateFileMode();
     const chapter = createChapter(`第${project.chapters.length + 1}章`);
     project.chapters.push(chapter);
     project.currentChapterId = chapter.id;
@@ -229,6 +250,7 @@ function bindEvents() {
   });
 
   deleteChapterBtn.addEventListener("click", () => {
+    deactivateFileMode();
     if (project.chapters.length <= 1) {
       const chapter = getCurrentChapter();
       chapter.content = "";
@@ -253,6 +275,7 @@ function bindEvents() {
   });
 
   chapterListEl.addEventListener("click", (event) => {
+    deactivateFileMode();
     const button = event.target.closest("button[data-chapter-id]");
     if (!button) return;
 
@@ -281,7 +304,10 @@ function bindEvents() {
   });
 
   chooseFolderBtn.addEventListener("click", async () => {
-    await chooseFolder();
+    const handle = await chooseFolder();
+    if (handle) {
+      await loadExplorerFiles();
+    }
   });
 
   exportFolderBtn.addEventListener("click", async () => {
@@ -290,6 +316,18 @@ function bindEvents() {
 
   importFolderBtn.addEventListener("click", async () => {
     await importFromFolder();
+  });
+
+  refreshExplorerBtn.addEventListener("click", async () => {
+    await loadExplorerFiles();
+  });
+
+  explorerListEl.addEventListener("click", async (event) => {
+    const button = event.target.closest("button[data-file-name]");
+    if (!button) return;
+    const fileName = button.dataset.fileName;
+    if (!fileName) return;
+    await openFileFromExplorer(fileName);
   });
 
   window.addEventListener("resize", () => {
@@ -362,7 +400,25 @@ function renderCurrentChapter() {
   chapterTitleInput.value = chapter.title || "";
   chapterSettingInput.value = chapter.setting || "";
   editor.value = chapter.content || "";
+  setFileModeUI(false);
   clearSuggestion();
+}
+
+function isFileMode() {
+  return Boolean(activeFileName && selectedFolderHandle);
+}
+
+function setFileModeUI(enabled) {
+  chapterTitleInput.disabled = enabled;
+  chapterTitleInput.title = enabled ? "文件模式下章节标题来自文件名" : "";
+}
+
+function deactivateFileMode() {
+  if (!activeFileName) return;
+  void flushPendingFileAutosave();
+  activeFileName = "";
+  setFileModeUI(false);
+  renderExplorerList();
 }
 
 function queueAutosave() {
@@ -575,6 +631,9 @@ async function requestCompletion(options = {}) {
   const cursor = editor.selectionStart;
   const selectionStart = editor.selectionStart;
   const selectionEnd = editor.selectionEnd;
+  const activeChapterSetting = chapterSettingInput.value;
+  const activeCharacterSetting = characterSettingInput.value;
+  const activeChapterTitle = chapterTitleInput.value || chapter.title;
 
   if (isAuto) {
     if (!autoTabEnabled) return;
@@ -597,7 +656,7 @@ async function requestCompletion(options = {}) {
   let contextHash = "";
   if (isAuto) {
     contextHash = hashText(
-      `${project.currentChapterId}|${selectionStart}|${context.slice(-800)}|${chapter.setting.slice(-200)}|${project.characterSetting.slice(-200)}`
+      `${project.currentChapterId}|${selectionStart}|${context.slice(-800)}|${activeChapterSetting.slice(-200)}|${activeCharacterSetting.slice(-200)}|${activeFileName}`
     );
     if (contextHash === lastAutoContextHash) return;
 
@@ -634,9 +693,9 @@ async function requestCompletion(options = {}) {
         model: modelInput.value.trim(),
         maxTokens: tabSettings.maxTokens,
         novelTitle: project.title,
-        chapterTitle: chapter.title,
-        chapterSetting: chapter.setting,
-        characterSetting: project.characterSetting,
+        chapterTitle: activeChapterTitle,
+        chapterSetting: activeChapterSetting,
+        characterSetting: activeCharacterSetting,
         paragraphMemory: collectParagraphMemory(chapter.content, cursor)
       })
     });
@@ -674,8 +733,11 @@ async function requestChapterContinuation() {
   const end = editor.selectionEnd;
   const beforeCursor = chapter.content.slice(0, start);
   const context = beforeCursor.slice(-6000);
+  const activeChapterSetting = chapterSettingInput.value;
+  const activeCharacterSetting = characterSettingInput.value;
+  const activeChapterTitle = chapterTitleInput.value || chapter.title;
 
-  if (!context.trim() && !chapter.setting.trim() && !project.characterSetting.trim()) {
+  if (!context.trim() && !activeChapterSetting.trim() && !activeCharacterSetting.trim()) {
     setStatus("状态：请先输入正文或设定，再执行整章续写");
     return;
   }
@@ -698,9 +760,9 @@ async function requestChapterContinuation() {
         chapterModel: chapterModelInput.value.trim(),
         targetChars,
         novelTitle: project.title,
-        chapterTitle: chapter.title,
-        chapterSetting: chapter.setting,
-        characterSetting: project.characterSetting
+        chapterTitle: activeChapterTitle,
+        chapterSetting: activeChapterSetting,
+        characterSetting: activeCharacterSetting
       })
     });
 
@@ -720,7 +782,11 @@ async function requestChapterContinuation() {
     chapter.content = editor.value;
     chapter.updatedAt = Date.now();
     clearSuggestion();
-    queueAutosave();
+    if (isFileMode()) {
+      queueFileAutosave();
+    } else {
+      queueAutosave();
+    }
     setStatus("状态：整章续写已插入");
   } catch (err) {
     if (err.name === "AbortError") {
@@ -796,7 +862,11 @@ function acceptSuggestion() {
   chapter.updatedAt = Date.now();
 
   clearSuggestion();
-  queueAutosave();
+  if (isFileMode()) {
+    queueFileAutosave();
+  } else {
+    queueAutosave();
+  }
   triggerDebouncedCompletion();
   setStatus("状态：已插入建议");
 }
@@ -946,6 +1016,175 @@ function downloadText(fileName, text, mimeType) {
   URL.revokeObjectURL(url);
 }
 
+function renderExplorerSection(isVisible) {
+  explorerSection.classList.toggle("hidden", !isVisible);
+}
+
+async function loadExplorerFiles() {
+  if (!selectedFolderHandle) {
+    renderExplorerSection(false);
+    return;
+  }
+
+  explorerFiles = await listEditableFiles(selectedFolderHandle);
+  renderExplorerSection(true);
+  renderExplorerList();
+}
+
+function renderExplorerList() {
+  explorerListEl.innerHTML = "";
+
+  if (!explorerFiles.length) {
+    const empty = document.createElement("div");
+    empty.className = "folder-info";
+    empty.textContent = "当前文件夹没有可编辑的 .md/.txt 文件";
+    explorerListEl.appendChild(empty);
+    return;
+  }
+
+  explorerFiles.forEach((item) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "explorer-item";
+    button.dataset.fileName = item.name;
+    button.textContent = item.name;
+    if (item.name === activeFileName) {
+      button.classList.add("active");
+    }
+    explorerListEl.appendChild(button);
+  });
+}
+
+async function openFileFromExplorer(fileName) {
+  if (!selectedFolderHandle) return;
+
+  await flushPendingFileAutosave();
+
+  const target = explorerFiles.find((item) => item.name === fileName);
+  if (!target) {
+    setStatus(`状态：未找到文件 ${fileName}`);
+    return;
+  }
+
+  try {
+    const text = await readFileText(target.handle);
+    const memory = await readMemoryForFile(fileName);
+
+    activeFileName = fileName;
+    setFileModeUI(true);
+    renderExplorerList();
+
+    const chapter = getCurrentChapter();
+    chapter.title = extractFileTitle(fileName);
+    chapter.setting = memory.chapterSetting || "";
+    chapter.content = text;
+    chapter.updatedAt = Date.now();
+    project.characterSetting = memory.characterSetting || "";
+
+    chapterTitleInput.value = chapter.title;
+    chapterSettingInput.value = chapter.setting;
+    characterSettingInput.value = project.characterSetting;
+    editor.value = chapter.content;
+
+    clearSuggestion();
+    setStatus(`状态：已打开文件 ${fileName}`);
+  } catch (err) {
+    setStatus(`状态：打开文件失败 - ${err.message}`);
+  }
+}
+
+function queueFileAutosave() {
+  if (!isFileMode()) return;
+  clearTimeout(fileAutosaveTimer);
+  fileAutosaveTimer = setTimeout(() => {
+    fileAutosaveTimer = null;
+    saveActiveFileNow();
+  }, FILE_AUTOSAVE_MS);
+}
+
+async function flushPendingFileAutosave() {
+  if (!fileAutosaveTimer) return;
+  clearTimeout(fileAutosaveTimer);
+  fileAutosaveTimer = null;
+  await saveActiveFileNow();
+}
+
+async function saveActiveFileNow() {
+  if (!isFileMode() || !selectedFolderHandle) return;
+
+  try {
+    await writeTextFile(selectedFolderHandle, activeFileName, editor.value);
+
+    const memory = {
+      characterSetting: characterSettingInput.value,
+      chapterSetting: chapterSettingInput.value,
+      updatedAt: new Date().toISOString()
+    };
+    await writeTextFile(
+      selectedFolderHandle,
+      getMemoryFileName(activeFileName),
+      JSON.stringify(memory, null, 2)
+    );
+
+    const chapter = getCurrentChapter();
+    chapter.content = editor.value;
+    chapter.setting = chapterSettingInput.value;
+    chapter.updatedAt = Date.now();
+    project.characterSetting = characterSettingInput.value;
+
+    autosaveInfoEl.textContent = `自动保存：${formatTime(Date.now())}（文件）`;
+  } catch (err) {
+    setStatus(`状态：文件自动保存失败 - ${err.message}`);
+  }
+}
+
+async function listEditableFiles(folderHandle) {
+  const output = [];
+
+  for await (const [name, handle] of folderHandle.entries()) {
+    if (handle.kind !== "file") continue;
+    if (!/\.(md|txt)$/i.test(name)) continue;
+    if (name.endsWith(FILE_MEMORY_SUFFIX)) continue;
+    output.push({ name, handle });
+  }
+
+  output.sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
+  return output;
+}
+
+async function readFileText(fileHandle) {
+  const file = await fileHandle.getFile();
+  return file.text();
+}
+
+async function readMemoryForFile(fileName) {
+  if (!selectedFolderHandle) {
+    return { characterSetting: "", chapterSetting: "" };
+  }
+
+  try {
+    const memoryHandle = await selectedFolderHandle.getFileHandle(
+      getMemoryFileName(fileName)
+    );
+    const raw = await readFileText(memoryHandle);
+    const parsed = JSON.parse(raw);
+    return {
+      characterSetting: asText(parsed.characterSetting),
+      chapterSetting: asText(parsed.chapterSetting)
+    };
+  } catch {
+    return { characterSetting: "", chapterSetting: "" };
+  }
+}
+
+function getMemoryFileName(fileName) {
+  return `${fileName}${FILE_MEMORY_SUFFIX}`;
+}
+
+function extractFileTitle(fileName) {
+  return String(fileName).replace(/\.[^.]+$/, "");
+}
+
 async function chooseFolder() {
   if (!("showDirectoryPicker" in window)) {
     setStatus("状态：当前浏览器不支持打开文件夹 API");
@@ -954,7 +1193,11 @@ async function chooseFolder() {
 
   try {
     selectedFolderHandle = await window.showDirectoryPicker({ mode: "readwrite" });
+    activeFileName = "";
+    explorerFiles = [];
     folderInfoEl.textContent = `文件夹：${selectedFolderHandle.name}`;
+    renderExplorerSection(true);
+    setFileModeUI(false);
     setStatus("状态：已选择文件夹");
     return selectedFolderHandle;
   } catch (err) {
@@ -1009,6 +1252,7 @@ async function importFromFolder() {
 
   selectedFolderHandle = folderHandle;
   folderInfoEl.textContent = `文件夹：${folderHandle.name}`;
+  await loadExplorerFiles();
 
   try {
     const files = await listTextFiles(folderHandle);
