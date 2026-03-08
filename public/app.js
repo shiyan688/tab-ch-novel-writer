@@ -917,9 +917,13 @@ function buildNovelMarkdown(targetProject) {
   return chunks.join("\n");
 }
 
-function buildSingleChapterMarkdown(chapter, index) {
+function buildSingleChapterMarkdown(novelTitle, chapter, index) {
+  const safeNovelTitle = (novelTitle || "未命名小说").trim();
+  const safeChapterTitle = (chapter.title || `Chapter ${index + 1}`).trim();
+  const combinedTitle = `${safeNovelTitle} - ${safeChapterTitle}`;
+
   return [
-    `# ${chapter.title || `Chapter ${index + 1}`}`,
+    `# ${combinedTitle}`,
     "",
     "## Chapter Notes",
     chapter.setting?.trim() || "(empty)",
@@ -974,8 +978,10 @@ async function exportToFolder() {
 
     for (let i = 0; i < project.chapters.length; i += 1) {
       const chapter = project.chapters[i];
-      const fileName = `${String(i + 1).padStart(2, "0")}-${safeFileName(chapter.title || `chapter-${i + 1}`)}.md`;
-      const content = buildSingleChapterMarkdown(chapter, i);
+      const novelPart = safeFileName(project.title || "novel");
+      const chapterPart = safeFileName(chapter.title || `chapter-${i + 1}`);
+      const fileName = `${String(i + 1).padStart(2, "0")}-${novelPart}-${chapterPart}.md`;
+      const content = buildSingleChapterMarkdown(project.title, chapter, i);
       await writeTextFile(novelDir, fileName, content);
     }
 
