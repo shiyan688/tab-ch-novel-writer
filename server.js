@@ -68,7 +68,7 @@ const TAB_SYSTEM_PROMPT_DEFAULT = `${WEBNOVEL_STYLE_PROMPT}
 
 补充要求（Tab 行内补全）：
 1. 你只需要补全紧接光标处的后续内容。
-2. 输出长度控制在 1-2 句，优先短句。
+2. 只续写下一句，必须是单句，不要分成两句。
 3. 只输出可直接插入正文的内容，不要重复上文。`;
 
 const CHAPTER_SYSTEM_PROMPT_DEFAULT = `${WEBNOVEL_STYLE_PROMPT}
@@ -88,7 +88,7 @@ const defaultConfig = {
     process.env.LLM_SYSTEM_PROMPT || TAB_SYSTEM_PROMPT_DEFAULT,
   chapterSystemPrompt:
     process.env.LLM_CHAPTER_SYSTEM_PROMPT || CHAPTER_SYSTEM_PROMPT_DEFAULT,
-  tabMaxTokens: clampInt(process.env.LLM_MAX_TOKENS, 10, 300, 80),
+  tabMaxTokens: clampInt(process.env.LLM_MAX_TOKENS, 48, 64, 56),
   tabTemperature: clampFloat(process.env.LLM_TEMPERATURE, 0, 2, 0.8),
   chapterMaxTokens: clampInt(process.env.LLM_CHAPTER_MAX_TOKENS, 200, 4000, 1600),
   chapterTemperature: clampFloat(process.env.LLM_CHAPTER_TEMPERATURE, 0, 2, 0.9),
@@ -153,7 +153,7 @@ app.post("/api/complete", async (req, res) => {
         ? model.trim()
         : defaultConfig.tabModel;
   const finalTemperature = clampFloat(temperature, 0, 2, defaultConfig.tabTemperature);
-  const finalMaxTokens = clampInt(maxTokens, 10, 300, defaultConfig.tabMaxTokens);
+  const finalMaxTokens = clampInt(maxTokens, 48, 64, defaultConfig.tabMaxTokens);
   const finalSystemPrompt =
     typeof systemPrompt === "string" && systemPrompt.trim()
       ? systemPrompt
@@ -357,7 +357,7 @@ function buildUserMessage(payload) {
           .join("\n")}`
       : "",
     `光标前正文：\n${safeContext}`,
-    "请直接续写，不超过两句话。"
+    "请直接续写下一句，只输出一句，不要重复上文。"
   ].filter(Boolean);
 
   return sections.join("\n\n");
@@ -410,7 +410,11 @@ function tryParseJson(text) {
 }
 
 function normalizeSuggestion(raw) {
-  return String(raw).replace(/\r/g, "").trim().slice(0, 240);
+  const cleaned = String(raw).replace(/\r/g, "").trim();
+  if (!cleaned) return "";
+
+  const singleSentence = takeFirstSentence(cleaned);
+  return singleSentence.slice(0, 180);
 }
 
 function normalizeLongContent(raw) {
@@ -437,4 +441,19 @@ function estimateChapterMaxTokens(targetChars, fallback) {
   const safeTarget = clampInt(targetChars, 300, 5000, 1200);
   const estimated = Math.ceil(safeTarget * 1.5);
   return clampInt(estimated, 200, 4000, fallback);
+}
+
+function takeFirstSentence(text) {
+  const endMarks = new Set(["。", "！", "？", "；", "…", "!", "?", ";"]);
+  let output = "";
+
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    output += ch;
+    if (endMarks.has(ch)) {
+      break;
+    }
+  }
+
+  return output.trim();
 }

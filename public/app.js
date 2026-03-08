@@ -1,9 +1,14 @@
 ﻿const API_CONFIG_KEY = "novel-editor-api-config-v2";
 const PROJECT_STORAGE_KEY = "novel-editor-project-v2";
+const AUTO_TAB_ENABLED_KEY = "novel-editor-auto-tab-enabled-v1";
 const AUTOSAVE_MS = 600;
-const COMPLETION_DEBOUNCE_MS = 360;
+const COMPLETION_DEBOUNCE_MS = 900;
 const MIN_CONTEXT_LENGTH = 8;
 const MAX_CONTEXT_CHARS = 3000;
+const TAB_MAX_TOKENS = 56;
+const AUTO_MIN_INTERVAL_MS = 6000;
+const AUTO_MAX_PER_MINUTE = 5;
+const AUTO_WINDOW_MS = 60 * 1000;
 
 const apiBaseUrlInput = document.getElementById("apiBaseUrl");
 const apiKeyInput = document.getElementById("apiKey");
@@ -36,6 +41,7 @@ const suggestionPreviewEl = document.getElementById("suggestionPreview");
 const folderInfoEl = document.getElementById("folderInfo");
 const chapterTargetCharsInput = document.getElementById("chapterTargetChars");
 const continueChapterBtn = document.getElementById("continueChapterBtn");
+const autoTabToggleBtn = document.getElementById("autoTabToggleBtn");
 
 let project = createDefaultProject();
 let suggestion = "";
@@ -43,9 +49,13 @@ let completionDebounceTimer = null;
 let autosaveTimer = null;
 let inFlightAbortController = null;
 let chapterAbortController = null;
-let lastCompletionKey = "";
 let defaultsLoaded = false;
 let selectedFolderHandle = null;
+let autoTabEnabled = false;
+let isComposing = false;
+let lastAutoRequestAt = 0;
+let autoRequestTimestamps = [];
+let lastAutoContextHash = "";
 
 initialize().catch((err) => {
   setStatus(`状态：初始化失败 - ${err.message}`);
@@ -53,6 +63,8 @@ initialize().catch((err) => {
 
 async function initialize() {
   bindEvents();
+  loadAutoTabState();
+  renderAutoTabToggle();
   loadApiConfigFromLocal();
   await loadServerDefaults();
   loadProjectFromLocal();
@@ -72,6 +84,13 @@ function bindEvents() {
     apiKeyInput.value = "";
     saveApiConfigToLocal();
     setStatus("状态：API Key 已清空");
+  });
+
+  autoTabToggleBtn.addEventListener("click", () => {
+    autoTabEnabled = !autoTabEnabled;
+    persistAutoTabState();
+    renderAutoTabToggle();
+    setStatus(autoTabEnabled ? "状态：自动 Tab 已开启" : "状态：自动 Tab 已关闭");
   });
 
   continueChapterBtn.addEventListener("click", async () => {
@@ -114,6 +133,15 @@ function bindEvents() {
     triggerDebouncedCompletion();
   });
 
+  editor.addEventListener("compositionstart", () => {
+    isComposing = true;
+  });
+
+  editor.addEventListener("compositionend", () => {
+    isComposing = false;
+    triggerDebouncedCompletion();
+  });
+
   editor.addEventListener("click", clearSuggestion);
   editor.addEventListener("scroll", () => {
     if (suggestion) {
@@ -146,7 +174,7 @@ function bindEvents() {
 
     if (event.key === " " && event.ctrlKey) {
       event.preventDefault();
-      requestCompletion();
+      requestCompletion({ reason: "manual" });
     }
   });
 
@@ -196,7 +224,6 @@ function bindEvents() {
     renderChapterList();
     renderCurrentChapter();
     clearSuggestion();
-    lastCompletionKey = "";
     setStatus("状态：已切换章节");
   });
 
@@ -367,6 +394,20 @@ function asText(value, fallback = "") {
   return typeof value === "string" ? value : fallback;
 }
 
+function loadAutoTabState() {
+  const raw = localStorage.getItem(AUTO_TAB_ENABLED_KEY);
+  autoTabEnabled = raw === "1";
+}
+
+function persistAutoTabState() {
+  localStorage.setItem(AUTO_TAB_ENABLED_KEY, autoTabEnabled ? "1" : "0");
+}
+
+function renderAutoTabToggle() {
+  autoTabToggleBtn.textContent = autoTabEnabled ? "自动 Tab：开" : "自动 Tab：关";
+  autoTabToggleBtn.classList.toggle("auto-on", autoTabEnabled);
+}
+
 function loadApiConfigFromLocal() {
   const raw = localStorage.getItem(API_CONFIG_KEY);
   if (!raw) return;
@@ -424,33 +465,64 @@ function saveApiConfigToLocal() {
 
 function triggerDebouncedCompletion() {
   if (!defaultsLoaded) return;
+  if (!autoTabEnabled) return;
 
   clearTimeout(completionDebounceTimer);
   completionDebounceTimer = setTimeout(() => {
-    requestCompletion();
+    requestCompletion({ reason: "auto" });
   }, COMPLETION_DEBOUNCE_MS);
 }
 
-async function requestCompletion() {
+async function requestCompletion(options = {}) {
   if (!defaultsLoaded) return;
+  const reason = options.reason || "manual";
+  const isAuto = reason === "auto";
 
   const chapter = getCurrentChapter();
   const cursor = editor.selectionStart;
+  const selectionStart = editor.selectionStart;
+  const selectionEnd = editor.selectionEnd;
+
+  if (isAuto) {
+    if (!autoTabEnabled) return;
+    if (selectionStart !== selectionEnd) return;
+    if (isComposing) return;
+    if (suggestion) return;
+  }
+
   const beforeCursor = chapter.content.slice(0, cursor);
   const context = beforeCursor.slice(-MAX_CONTEXT_CHARS);
 
   if (context.trim().length < MIN_CONTEXT_LENGTH) {
     clearSuggestion();
-    setStatus("状态：继续输入以触发补全");
+    if (!isAuto) {
+      setStatus("状态：继续输入以触发补全");
+    }
     return;
   }
 
-  const paragraphMemory = collectParagraphMemory(chapter.content, cursor);
-  const completionKey = buildCompletionKey(context, paragraphMemory, chapter);
-  if (completionKey === lastCompletionKey) return;
-  lastCompletionKey = completionKey;
+  let contextHash = "";
+  if (isAuto) {
+    contextHash = hashText(
+      `${project.currentChapterId}|${selectionStart}|${context.slice(-800)}|${chapter.setting.slice(-200)}|${project.characterSetting.slice(-200)}`
+    );
+    if (contextHash === lastAutoContextHash) return;
+
+    const now = Date.now();
+    if (now - lastAutoRequestAt < AUTO_MIN_INTERVAL_MS) return;
+
+    autoRequestTimestamps = autoRequestTimestamps.filter(
+      (item) => now - item < AUTO_WINDOW_MS
+    );
+    if (autoRequestTimestamps.length >= AUTO_MAX_PER_MINUTE) return;
+
+    lastAutoRequestAt = now;
+    autoRequestTimestamps.push(now);
+    lastAutoContextHash = contextHash;
+  }
 
   if (inFlightAbortController) {
+    if (isAuto) return;
     inFlightAbortController.abort();
   }
 
@@ -467,11 +539,12 @@ async function requestCompletion() {
         apiBaseUrl: apiBaseUrlInput.value.trim(),
         apiKey: apiKeyInput.value.trim(),
         model: modelInput.value.trim(),
+        maxTokens: TAB_MAX_TOKENS,
         novelTitle: project.title,
         chapterTitle: chapter.title,
         chapterSetting: chapter.setting,
         characterSetting: project.characterSetting,
-        paragraphMemory
+        paragraphMemory: collectParagraphMemory(chapter.content, cursor)
       })
     });
 
@@ -586,17 +659,6 @@ function splitParagraphs(text) {
     .filter(Boolean);
 }
 
-function buildCompletionKey(context, paragraphMemory, chapter) {
-  return [
-    project.currentChapterId,
-    editor.selectionStart,
-    context.slice(-200),
-    (paragraphMemory.before || []).join("|").slice(-260),
-    chapter.setting.slice(-120),
-    project.characterSetting.slice(-120)
-  ].join("::");
-}
-
 function normalizeSuggestion(raw, context) {
   let text = String(raw || "")
     .replace(/\r/g, "")
@@ -699,6 +761,23 @@ function clampInt(value, min, max, fallback) {
   const parsed = Number.parseInt(String(value), 10);
   if (Number.isNaN(parsed)) return fallback;
   return Math.min(max, Math.max(min, parsed));
+}
+
+function hashText(value) {
+  const input = String(value || "");
+  let hash = 2166136261;
+
+  for (let i = 0; i < input.length; i += 1) {
+    hash ^= input.charCodeAt(i);
+    hash +=
+      (hash << 1) +
+      (hash << 4) +
+      (hash << 7) +
+      (hash << 8) +
+      (hash << 24);
+  }
+
+  return (hash >>> 0).toString(16);
 }
 
 function buildNovelText(targetProject) {
