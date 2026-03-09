@@ -1,4 +1,19 @@
 const STYLE_SKILLS_KEY = "novel-editor-style-skills-v1";
+const DEFAULT_STYLE_SKILLS = [
+  {
+    id: "seed_high_pressure_chase",
+    name: "高压追逃·短句推进",
+    prompt: [
+      "用于高压追逐与危机段落的润色。",
+      "要求：",
+      "1) 句子更短，节奏更快，段落更紧凑；",
+      "2) 减少抽象形容，多用动作和结果；",
+      "3) 对话短促有压迫感；",
+      "4) 每段必须推进局势或抬高风险；",
+      "5) 段尾尽量留下钩子。"
+    ].join("\n")
+  }
+];
 
 const skillNameInput = document.getElementById("skillNameInput");
 const skillPromptInput = document.getElementById("skillPromptInput");
@@ -49,15 +64,18 @@ function bindEvents() {
 function loadSkills() {
   const raw = localStorage.getItem(STYLE_SKILLS_KEY);
   if (!raw) {
-    skills = [];
+    skills = cloneDefaultSkills();
+    persistSkills();
     return;
   }
 
   try {
     const parsed = JSON.parse(raw);
-    skills = sanitizeSkills(parsed);
+    skills = ensureDefaultSkillsPresent(sanitizeSkills(parsed));
+    persistSkills();
   } catch {
-    skills = [];
+    skills = cloneDefaultSkills();
+    persistSkills();
   }
 }
 
@@ -203,4 +221,18 @@ function createId() {
 
 function asText(value) {
   return typeof value === "string" ? value : "";
+}
+
+function cloneDefaultSkills() {
+  return DEFAULT_STYLE_SKILLS.map((item) => ({ ...item }));
+}
+
+function ensureDefaultSkillsPresent(list) {
+  const output = Array.isArray(list) ? [...list] : [];
+  DEFAULT_STYLE_SKILLS.forEach((seed) => {
+    if (!output.some((item) => item.id === seed.id)) {
+      output.unshift({ ...seed });
+    }
+  });
+  return output.slice(0, 200);
 }

@@ -15,6 +15,21 @@ const DEFAULT_TAB_SETTINGS = {
   autoMinIntervalMs: 6000,
   autoMaxPerMinute: 5
 };
+const DEFAULT_STYLE_SKILLS = [
+  {
+    id: "seed_high_pressure_chase",
+    name: "高压追逃·短句推进",
+    prompt: [
+      "用于高压追逐与危机段落的润色。",
+      "要求：",
+      "1) 句子更短，节奏更快，段落更紧凑；",
+      "2) 减少抽象形容，多用动作和结果；",
+      "3) 对话短促有压迫感；",
+      "4) 每段必须推进局势或抬高风险；",
+      "5) 段尾尽量留下钩子。"
+    ].join("\n")
+  }
+];
 
 const apiBaseUrlInput = document.getElementById("apiBaseUrl");
 const apiKeyInput = document.getElementById("apiKey");
@@ -589,15 +604,18 @@ function renderTabSettingsPanel(isOpen) {
 function loadStyleSkills() {
   const raw = localStorage.getItem(STYLE_SKILLS_KEY);
   if (!raw) {
-    styleSkills = [];
+    styleSkills = cloneDefaultStyleSkills();
+    persistStyleSkills();
     return;
   }
 
   try {
     const parsed = JSON.parse(raw);
-    styleSkills = sanitizeStyleSkills(parsed);
+    styleSkills = ensureDefaultSkillsPresent(sanitizeStyleSkills(parsed));
+    persistStyleSkills();
   } catch {
-    styleSkills = [];
+    styleSkills = cloneDefaultStyleSkills();
+    persistStyleSkills();
   }
 }
 
@@ -612,6 +630,24 @@ function sanitizeStyleSkills(value) {
     }))
     .filter((item) => item.id && item.name && item.prompt)
     .slice(0, 200);
+}
+
+function cloneDefaultStyleSkills() {
+  return DEFAULT_STYLE_SKILLS.map((item) => ({ ...item }));
+}
+
+function ensureDefaultSkillsPresent(list) {
+  const output = Array.isArray(list) ? [...list] : [];
+  DEFAULT_STYLE_SKILLS.forEach((seed) => {
+    if (!output.some((item) => item.id === seed.id)) {
+      output.unshift({ ...seed });
+    }
+  });
+  return output.slice(0, 200);
+}
+
+function persistStyleSkills() {
+  localStorage.setItem(STYLE_SKILLS_KEY, JSON.stringify(styleSkills));
 }
 
 function renderStyleSkillSelect() {
