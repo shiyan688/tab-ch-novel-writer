@@ -98,12 +98,14 @@ label {
 }
 
 input,
+select,
 textarea,
 button {
   font: inherit;
 }
 
 input,
+select,
 textarea {
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -112,6 +114,11 @@ textarea {
 }
 
 input {
+  height: 38px;
+  padding: 0 10px;
+}
+
+select {
   height: 38px;
   padding: 0 10px;
 }
@@ -342,6 +349,33 @@ button.danger {
   color: var(--text);
 }
 
+.polish-panel {
+  margin-top: 4px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #f9f4e8;
+  padding: 12px;
+  display: grid;
+  gap: 10px;
+}
+
+.polish-panel h3 {
+  margin: 0;
+  font-size: 15px;
+  color: var(--text);
+}
+
+.polish-grid {
+  grid-template-columns: 1fr 1.2fr auto;
+  align-items: end;
+}
+
+.polish-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
 .hidden {
   display: none;
 }
@@ -366,6 +400,11 @@ button.danger {
   .grid-3,
   .grid-2 {
     grid-template-columns: 1fr;
+  }
+
+  .polish-grid {
+    grid-template-columns: 1fr;
+    align-items: stretch;
   }
 
   .top {

@@ -78,6 +78,14 @@ const CHAPTER_SYSTEM_PROMPT_DEFAULT = `${WEBNOVEL_STYLE_PROMPT}
 2. 保持人物行为和设定一致，避免跳脱。
 3. 只输出正文内容，不要标题、说明或分点。`;
 
+const POLISH_SYSTEM_PROMPT_DEFAULT = `${WEBNOVEL_STYLE_PROMPT}
+
+补充要求（选中润色）：
+1. 你的任务是润色用户选中的原文，不是续写新剧情。
+2. 保留原意与关键信息，不擅自添加设定外内容。
+3. 在保证语义不变的前提下，优化节奏、表达和网文可读性。
+4. 只输出润色后的正文，不要解释，不要分点。`;
+
 const defaultConfig = {
   apiBaseUrl: trimTrailingSlash(
     process.env.LLM_BASE_URL || "https://api.openai.com/v1"
@@ -88,6 +96,8 @@ const defaultConfig = {
     process.env.LLM_SYSTEM_PROMPT || TAB_SYSTEM_PROMPT_DEFAULT,
   chapterSystemPrompt:
     process.env.LLM_CHAPTER_SYSTEM_PROMPT || CHAPTER_SYSTEM_PROMPT_DEFAULT,
+  polishSystemPrompt:
+    process.env.LLM_POLISH_SYSTEM_PROMPT || POLISH_SYSTEM_PROMPT_DEFAULT,
   tabMaxTokens: clampInt(process.env.LLM_MAX_TOKENS, 48, 64, 56),
   tabTemperature: clampFloat(process.env.LLM_TEMPERATURE, 0, 2, 0.8),
   chapterMaxTokens: clampInt(process.env.LLM_CHAPTER_MAX_TOKENS, 200, 4000, 1600),
@@ -323,6 +333,110 @@ app.post("/api/continue-chapter", async (req, res) => {
   }
 });
 
+app.post("/api/polish", async (req, res) => {
+  const {
+    selectedText,
+    styleRequirement,
+    styleSkillPrompt,
+    apiBaseUrl,
+    apiKey,
+    chapterModel,
+    model,
+    temperature,
+    maxTokens,
+    systemPrompt,
+    novelTitle,
+    chapterTitle,
+    chapterSetting,
+    characterSetting
+  } = req.body || {};
+
+  const safeSelectedText = typeof selectedText === "string" ? selectedText : "";
+  if (!safeSelectedText.trim()) {
+    res.status(400).json({ error: "selectedText is required" });
+    return;
+  }
+
+  const finalApiBaseUrl = trimTrailingSlash(
+    typeof apiBaseUrl === "string" && apiBaseUrl.trim()
+      ? apiBaseUrl
+      : defaultConfig.apiBaseUrl
+  );
+  const finalApiKey =
+    typeof apiKey === "string" && apiKey.trim() ? apiKey.trim() : process.env.LLM_API_KEY;
+  const finalModel =
+    typeof chapterModel === "string" && chapterModel.trim()
+      ? chapterModel.trim()
+      : typeof model === "string" && model.trim()
+        ? model.trim()
+        : defaultConfig.chapterModel;
+  const finalTemperature = clampFloat(temperature, 0, 2, defaultConfig.chapterTemperature);
+  const estimatedMaxTokens = estimatePolishMaxTokens(safeSelectedText);
+  const finalMaxTokens = clampInt(maxTokens, 120, 2200, estimatedMaxTokens);
+  const finalSystemPrompt =
+    typeof systemPrompt === "string" && systemPrompt.trim()
+      ? systemPrompt
+      : defaultConfig.polishSystemPrompt;
+
+  if (!finalApiKey) {
+    res.status(400).json({
+      error:
+        "API key is missing. Provide apiKey in request body or set LLM_API_KEY in .env"
+    });
+    return;
+  }
+
+  const completionUrl = `${finalApiBaseUrl}/chat/completions`;
+  const userMessage = buildPolishUserMessage({
+    selectedText: safeSelectedText,
+    styleRequirement,
+    styleSkillPrompt,
+    novelTitle,
+    chapterTitle,
+    chapterSetting,
+    characterSetting
+  });
+
+  try {
+    const upstream = await fetch(completionUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${finalApiKey}`
+      },
+      body: JSON.stringify({
+        model: finalModel,
+        temperature: finalTemperature,
+        max_tokens: finalMaxTokens,
+        messages: [
+          { role: "system", content: finalSystemPrompt },
+          { role: "user", content: userMessage }
+        ]
+      })
+    });
+
+    const text = await upstream.text();
+    const data = tryParseJson(text);
+
+    if (!upstream.ok) {
+      const detail =
+        data?.error?.message ||
+        data?.message ||
+        text ||
+        `Upstream error (${upstream.status})`;
+      res.status(upstream.status).json({ error: detail });
+      return;
+    }
+
+    const polishedText = normalizeLongContent(data?.choices?.[0]?.message?.content || "");
+    res.json({ polishedText });
+  } catch (err) {
+    res.status(500).json({
+      error: err instanceof Error ? err.message : "Unknown server error"
+    });
+  }
+});
+
 app.get("*", (_req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
 });
@@ -385,6 +499,30 @@ function buildChapterUserMessage(payload) {
   return sections.join("\n\n");
 }
 
+function buildPolishUserMessage(payload) {
+  const safeSelectedText = safeText(payload.selectedText, 16000);
+  const safeNovelTitle = safeText(payload.novelTitle, 120);
+  const safeChapterTitle = safeText(payload.chapterTitle, 120);
+  const safeChapterSetting = safeText(payload.chapterSetting, 2000);
+  const safeCharacterSetting = safeText(payload.characterSetting, 2000);
+  const safeStyleSkillPrompt = safeText(payload.styleSkillPrompt, 4000);
+  const safeStyleRequirement = safeText(payload.styleRequirement, 1000);
+
+  const sections = [
+    "请润色下面这段已写好的正文。",
+    safeNovelTitle ? `小说标题：\n${safeNovelTitle}` : "",
+    safeChapterTitle ? `章节标题：\n${safeChapterTitle}` : "",
+    safeCharacterSetting ? `人物设定：\n${safeCharacterSetting}` : "",
+    safeChapterSetting ? `章节设定：\n${safeChapterSetting}` : "",
+    safeStyleSkillPrompt ? `风格预设：\n${safeStyleSkillPrompt}` : "",
+    safeStyleRequirement ? `额外风格要求：\n${safeStyleRequirement}` : "",
+    `原文：\n${safeSelectedText}`,
+    "请只输出润色后的正文，不要解释。"
+  ].filter(Boolean);
+
+  return sections.join("\n\n");
+}
+
 function trimTrailingSlash(value) {
   return String(value).replace(/\/+$/, "");
 }
@@ -441,6 +579,12 @@ function estimateChapterMaxTokens(targetChars, fallback) {
   const safeTarget = clampInt(targetChars, 300, 5000, 1200);
   const estimated = Math.ceil(safeTarget * 1.5);
   return clampInt(estimated, 200, 4000, fallback);
+}
+
+function estimatePolishMaxTokens(selectedText) {
+  const sourceLength = safeText(selectedText, 20000).length;
+  const estimated = Math.ceil(sourceLength * 1.4);
+  return clampInt(estimated, 120, 2200, 600);
 }
 
 function takeFirstSentence(text) {

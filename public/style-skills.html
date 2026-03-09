@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>风格卡片管理</title>
+    <link rel="stylesheet" href="/style.css" />
+    <link rel="stylesheet" href="/style-skills.css" />
+  </head>
+  <body>
+    <main class="app skills-app">
+      <header class="top">
+        <div>
+          <h1>风格卡片管理</h1>
+          <p>创建、编辑、删除可复用的润色风格预设</p>
+        </div>
+        <div class="top-right">
+          <a class="back-link" href="/">返回编辑器</a>
+        </div>
+      </header>
+
+      <section class="panel skills-form-panel">
+        <h2 id="formTitle">新建风格卡片</h2>
+        <div class="grid">
+          <label>
+            卡片名称
+            <input id="skillNameInput" type="text" placeholder="例如：高压冲突快节奏" />
+          </label>
+          <label>
+            风格提示词
+            <textarea
+              id="skillPromptInput"
+              class="skill-prompt-input"
+              placeholder="写明这个风格要强调的句式、节奏、情绪、对话方式..."
+              spellcheck="false"
+            ></textarea>
+          </label>
+        </div>
+        <div class="row-actions">
+          <button id="saveSkillBtn" type="button">保存卡片</button>
+          <button id="resetSkillBtn" type="button" class="ghost">清空表单</button>
+          <button id="cancelEditBtn" type="button" class="ghost hidden">取消编辑</button>
+        </div>
+      </section>
+
+      <section class="panel skills-list-panel">
+        <h2>风格卡片列表</h2>
+        <div id="skillsList" class="skills-list"></div>
+      </section>
+    </main>
+    <script type="module" src="/style-skills.js"></script>
+  </body>
+</html>

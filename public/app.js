@@ -2,6 +2,7 @@
 const PROJECT_STORAGE_KEY = "novel-editor-project-v2";
 const AUTO_TAB_ENABLED_KEY = "novel-editor-auto-tab-enabled-v1";
 const TAB_SETTINGS_KEY = "novel-editor-tab-settings-v1";
+const STYLE_SKILLS_KEY = "novel-editor-style-skills-v1";
 const AUTOSAVE_MS = 600;
 const FILE_AUTOSAVE_MS = 700;
 const MIN_CONTEXT_LENGTH = 8;
@@ -58,6 +59,10 @@ const tabAutoMinIntervalMsInput = document.getElementById("tabAutoMinIntervalMsI
 const tabAutoMaxPerMinuteInput = document.getElementById("tabAutoMaxPerMinuteInput");
 const saveTabSettingsBtn = document.getElementById("saveTabSettingsBtn");
 const resetTabSettingsBtn = document.getElementById("resetTabSettingsBtn");
+const styleSkillSelect = document.getElementById("styleSkillSelect");
+const polishRequirementInput = document.getElementById("polishRequirementInput");
+const polishSelectionBtn = document.getElementById("polishSelectionBtn");
+const openStyleSkillsBtn = document.getElementById("openStyleSkillsBtn");
 
 let project = createDefaultProject();
 let suggestion = "";
@@ -76,6 +81,8 @@ let lastAutoRequestAt = 0;
 let autoRequestTimestamps = [];
 let lastAutoContextHash = "";
 let tabSettings = { ...DEFAULT_TAB_SETTINGS };
+let styleSkills = [];
+let isPolishingSelection = false;
 
 initialize().catch((err) => {
   setStatus(`状态：初始化失败 - ${err.message}`);
@@ -88,6 +95,8 @@ async function initialize() {
   loadTabSettings();
   renderTabSettingsInputs();
   renderTabSettingsPanel(false);
+  loadStyleSkills();
+  renderStyleSkillSelect();
   loadApiConfigFromLocal();
   await loadServerDefaults();
   loadProjectFromLocal();
@@ -142,6 +151,14 @@ function bindEvents() {
 
   continueChapterBtn.addEventListener("click", async () => {
     await requestChapterContinuation();
+  });
+
+  polishSelectionBtn.addEventListener("click", async () => {
+    await polishSelectedText();
+  });
+
+  openStyleSkillsBtn.addEventListener("click", () => {
+    window.open("/style-skills.html", "_blank", "noopener");
   });
 
   novelTitleInput.addEventListener("input", () => {
@@ -333,6 +350,18 @@ function bindEvents() {
   window.addEventListener("resize", () => {
     if (suggestion) {
       renderSuggestion();
+    }
+  });
+
+  window.addEventListener("focus", () => {
+    loadStyleSkills();
+    renderStyleSkillSelect();
+  });
+
+  window.addEventListener("storage", (event) => {
+    if (event.key === STYLE_SKILLS_KEY) {
+      loadStyleSkills();
+      renderStyleSkillSelect();
     }
   });
 }
@@ -555,6 +584,55 @@ function renderTabSettingsInputs() {
 function renderTabSettingsPanel(isOpen) {
   tabSettingsPanel.classList.toggle("hidden", !isOpen);
   tabSettingsToggleBtn.textContent = isOpen ? "收起设置" : "Tab 设置";
+}
+
+function loadStyleSkills() {
+  const raw = localStorage.getItem(STYLE_SKILLS_KEY);
+  if (!raw) {
+    styleSkills = [];
+    return;
+  }
+
+  try {
+    const parsed = JSON.parse(raw);
+    styleSkills = sanitizeStyleSkills(parsed);
+  } catch {
+    styleSkills = [];
+  }
+}
+
+function sanitizeStyleSkills(value) {
+  if (!Array.isArray(value)) return [];
+
+  return value
+    .map((item) => ({
+      id: asText(item?.id),
+      name: asText(item?.name).trim(),
+      prompt: asText(item?.prompt).trim()
+    }))
+    .filter((item) => item.id && item.name && item.prompt)
+    .slice(0, 200);
+}
+
+function renderStyleSkillSelect() {
+  const currentValue = styleSkillSelect.value;
+  styleSkillSelect.innerHTML = "";
+
+  const emptyOption = document.createElement("option");
+  emptyOption.value = "";
+  emptyOption.textContent = "不使用预设";
+  styleSkillSelect.appendChild(emptyOption);
+
+  styleSkills.forEach((item) => {
+    const option = document.createElement("option");
+    option.value = item.id;
+    option.textContent = item.name;
+    styleSkillSelect.appendChild(option);
+  });
+
+  if (currentValue && styleSkills.some((item) => item.id === currentValue)) {
+    styleSkillSelect.value = currentValue;
+  }
 }
 
 function loadApiConfigFromLocal() {
@@ -800,6 +878,80 @@ async function requestChapterContinuation() {
   }
 }
 
+async function polishSelectedText() {
+  if (!defaultsLoaded) return;
+  if (isPolishingSelection) return;
+
+  const start = editor.selectionStart;
+  const end = editor.selectionEnd;
+  if (start === end) {
+    setStatus("状态：请先选中需要润色的文本");
+    return;
+  }
+
+  const selectedText = editor.value.slice(start, end);
+  if (!selectedText.trim()) {
+    setStatus("状态：选中文本为空，无法润色");
+    return;
+  }
+
+  const chapter = getCurrentChapter();
+  const styleRequirement = polishRequirementInput.value.trim();
+  const skillId = styleSkillSelect.value;
+  const selectedSkill = styleSkills.find((item) => item.id === skillId);
+  const styleSkillPrompt = selectedSkill?.prompt || "";
+
+  setPolishSelectionBusy(true);
+  setStatus("状态：正在润色选中文本...");
+
+  try {
+    const response = await fetch("/api/polish", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        selectedText,
+        styleRequirement,
+        styleSkillPrompt,
+        apiBaseUrl: apiBaseUrlInput.value.trim(),
+        apiKey: apiKeyInput.value.trim(),
+        chapterModel: chapterModelInput.value.trim(),
+        novelTitle: project.title,
+        chapterTitle: chapterTitleInput.value || chapter.title,
+        chapterSetting: chapterSettingInput.value,
+        characterSetting: characterSettingInput.value
+      })
+    });
+
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.error || "润色请求失败");
+    }
+
+    const polishedText = normalizePolishedText(payload.polishedText || payload.content || "");
+    if (!polishedText) {
+      setStatus("状态：润色结果为空");
+      return;
+    }
+
+    editor.setRangeText(polishedText, start, end, "select");
+    const chapterNow = getCurrentChapter();
+    chapterNow.content = editor.value;
+    chapterNow.updatedAt = Date.now();
+
+    clearSuggestion();
+    if (isFileMode()) {
+      queueFileAutosave();
+    } else {
+      queueAutosave();
+    }
+    setStatus("状态：选中文本已润色");
+  } catch (err) {
+    setStatus(`状态：润色失败 - ${err.message}`);
+  } finally {
+    setPolishSelectionBusy(false);
+  }
+}
+
 function collectParagraphMemory(content, cursor) {
   const beforeText = content.slice(0, cursor);
   const afterText = content.slice(cursor);
@@ -842,6 +994,15 @@ function normalizeLongContinuation(raw) {
     .replace(/```$/, "")
     .trim()
     .slice(0, 12000);
+}
+
+function normalizePolishedText(raw) {
+  return String(raw || "")
+    .replace(/\r/g, "")
+    .replace(/^```[\s\S]*?\n/, "")
+    .replace(/```$/, "")
+    .trim()
+    .slice(0, 20000);
 }
 
 function formatChapterInsertion(beforeCursor, longText) {
@@ -905,6 +1066,12 @@ function setStatus(text) {
 function setContinueChapterBusy(isBusy) {
   continueChapterBtn.disabled = isBusy;
   continueChapterBtn.textContent = isBusy ? "续写中..." : "续写完整章";
+}
+
+function setPolishSelectionBusy(isBusy) {
+  isPolishingSelection = isBusy;
+  polishSelectionBtn.disabled = isBusy;
+  polishSelectionBtn.textContent = isBusy ? "润色中..." : "选中润色";
 }
 
 function formatTime(timeMs) {
