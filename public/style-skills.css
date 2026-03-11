@@ -1,4 +1,4 @@
-.skills-app {
+﻿.skills-app {
   width: min(1020px, 96vw);
 }
 
@@ -9,10 +9,17 @@
   min-width: 104px;
   height: 36px;
   padding: 0 12px;
+  border: 1px solid var(--line-strong);
   border-radius: 10px;
   text-decoration: none;
-  color: var(--text);
-  background: #ebe4d6;
+  color: #35557d;
+  background: linear-gradient(180deg, #ffffff, #f1f5fb);
+  box-shadow: var(--shadow-sm);
+  font-weight: 600;
+}
+
+.back-link:hover {
+  border-color: #a8b9d4;
 }
 
 .skills-form-panel,
@@ -32,23 +39,26 @@
 
 .skill-card {
   border: 1px solid var(--line);
-  border-radius: 12px;
-  background: #fcf8ef;
+  border-radius: 14px;
+  background: linear-gradient(180deg, #ffffff, #f6f9ff);
   padding: 12px;
   display: grid;
   gap: 8px;
+  box-shadow: var(--shadow-sm);
 }
 
 .skill-card h3 {
   margin: 0;
   font-size: 16px;
+  color: #213b61;
 }
 
 .skill-card pre {
   margin: 0;
   white-space: pre-wrap;
   word-break: break-word;
-  color: var(--muted);
-  font-size: 14px;
+  color: #4f6485;
+  font-size: 13px;
   line-height: 1.65;
 }
+

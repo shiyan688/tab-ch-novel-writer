@@ -1,9 +1,15 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>风格卡片管理</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;700&display=swap"
+    />
+    <title>椋庢牸鍗＄墖绠＄悊</title>
     <link rel="stylesheet" href="/style.css" />
     <link rel="stylesheet" href="/style-skills.css" />
   </head>
@@ -11,43 +17,44 @@
     <main class="app skills-app">
       <header class="top">
         <div>
-          <h1>风格卡片管理</h1>
-          <p>创建、编辑、删除可复用的润色风格预设</p>
+          <h1>椋庢牸鍗＄墖绠＄悊</h1>
+          <p>鍒涘缓銆佺紪杈戙€佸垹闄ゅ彲澶嶇敤鐨勬鼎鑹查鏍奸璁?/p>
         </div>
         <div class="top-right">
-          <a class="back-link" href="/">返回编辑器</a>
+          <a class="back-link" href="/">杩斿洖缂栬緫鍣?/a>
         </div>
       </header>
 
       <section class="panel skills-form-panel">
-        <h2 id="formTitle">新建风格卡片</h2>
+        <h2 id="formTitle">鏂板缓椋庢牸鍗＄墖</h2>
         <div class="grid">
           <label>
-            卡片名称
-            <input id="skillNameInput" type="text" placeholder="例如：高压冲突快节奏" />
+            鍗＄墖鍚嶇О
+            <input id="skillNameInput" type="text" placeholder="渚嬪锛氶珮鍘嬪啿绐佸揩鑺傚" />
           </label>
           <label>
-            风格提示词
-            <textarea
+            椋庢牸鎻愮ず璇?            <textarea
               id="skillPromptInput"
               class="skill-prompt-input"
-              placeholder="写明这个风格要强调的句式、节奏、情绪、对话方式..."
+              placeholder="鍐欐槑杩欎釜椋庢牸瑕佸己璋冪殑鍙ュ紡銆佽妭濂忋€佹儏缁€佸璇濇柟寮?.."
               spellcheck="false"
             ></textarea>
           </label>
         </div>
         <div class="row-actions">
-          <button id="saveSkillBtn" type="button">保存卡片</button>
-          <button id="resetSkillBtn" type="button" class="ghost">清空表单</button>
-          <button id="cancelEditBtn" type="button" class="ghost hidden">取消编辑</button>
+          <button id="saveSkillBtn" type="button">淇濆瓨鍗＄墖</button>
+          <button id="resetSkillBtn" type="button" class="ghost">娓呯┖琛ㄥ崟</button>
+          <button id="cancelEditBtn" type="button" class="ghost hidden">鍙栨秷缂栬緫</button>
         </div>
       </section>
 
       <section class="panel skills-list-panel">
-        <h2>风格卡片列表</h2>
+        <h2>椋庢牸鍗＄墖鍒楄〃</h2>
         <div id="skillsList" class="skills-list"></div>
       </section>
     </main>
     <script type="module" src="/style-skills.js"></script>
   </body>
 </html>
+
+
