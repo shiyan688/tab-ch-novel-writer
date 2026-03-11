@@ -118,6 +118,9 @@ app.get("/api/default-config", (_req, res) => {
     model: defaultConfig.tabModel,
     tabModel: defaultConfig.tabModel,
     chapterModel: defaultConfig.chapterModel,
+    tabSystemPrompt: defaultConfig.tabSystemPrompt,
+    chapterSystemPrompt: defaultConfig.chapterSystemPrompt,
+    polishSystemPrompt: defaultConfig.polishSystemPrompt,
     temperature: defaultConfig.tabTemperature,
     maxTokens: defaultConfig.tabMaxTokens,
     chapterTemperature: defaultConfig.chapterTemperature,
@@ -130,6 +133,8 @@ app.get("/api/default-config", (_req, res) => {
 app.post("/api/complete", async (req, res) => {
   const {
     context,
+    stream,
+    debugTrace,
     apiBaseUrl,
     apiKey,
     model,
@@ -178,6 +183,7 @@ app.post("/api/complete", async (req, res) => {
   }
 
   const completionUrl = `${finalApiBaseUrl}/chat/completions`;
+  const wantsStream = stream === true;
   const userMessage = buildUserMessage({
     context,
     novelTitle,
@@ -188,21 +194,122 @@ app.post("/api/complete", async (req, res) => {
   });
 
   try {
+    const upstreamBody = {
+      model: finalModel,
+      temperature: finalTemperature,
+      max_tokens: finalMaxTokens,
+      messages: [
+        { role: "system", content: finalSystemPrompt },
+        { role: "user", content: userMessage }
+      ]
+    };
+
+    if (wantsStream) {
+      const upstream = await fetch(completionUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${finalApiKey}`
+        },
+        body: JSON.stringify({
+          ...upstreamBody,
+          stream: true
+        })
+      });
+
+      if (!upstream.ok) {
+        const text = await upstream.text();
+        const data = tryParseJson(text);
+        const detail =
+          data?.error?.message ||
+          data?.message ||
+          text ||
+          `Upstream error (${upstream.status})`;
+        res.status(upstream.status).json({ error: detail });
+        return;
+      }
+
+      if (!upstream.body) {
+        res.status(502).json({ error: "Upstream stream body is empty" });
+        return;
+      }
+
+      res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
+      res.setHeader("Cache-Control", "no-cache");
+      res.setHeader("Connection", "keep-alive");
+
+      writeNdjson(res, {
+        type: "meta",
+        model: finalModel,
+        temperature: finalTemperature,
+        maxTokens: finalMaxTokens,
+        systemPrompt: finalSystemPrompt,
+        userPrompt: userMessage
+      });
+
+      const reader = upstream.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let streamText = "";
+      let sentDone = false;
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        for (const rawLine of lines) {
+          const line = rawLine.trim();
+          if (!line) continue;
+
+          const dataText = line.startsWith("data:")
+            ? line.slice(5).trim()
+            : line.startsWith("{")
+              ? line
+              : "";
+          if (!dataText) continue;
+
+          if (dataText === "[DONE]") {
+            if (!sentDone) {
+              sentDone = true;
+              writeNdjson(res, {
+                type: "done",
+                suggestion: normalizeSuggestion(streamText)
+              });
+            }
+            continue;
+          }
+
+          const data = tryParseJson(dataText);
+          const delta = extractStreamTextDelta(data);
+          if (!delta) continue;
+
+          streamText += delta;
+          writeNdjson(res, { type: "delta", text: delta });
+        }
+      }
+
+      if (!sentDone) {
+        writeNdjson(res, {
+          type: "done",
+          suggestion: normalizeSuggestion(streamText)
+        });
+      }
+
+      res.end();
+      return;
+    }
+
     const upstream = await fetch(completionUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${finalApiKey}`
       },
-      body: JSON.stringify({
-        model: finalModel,
-        temperature: finalTemperature,
-        max_tokens: finalMaxTokens,
-        messages: [
-          { role: "system", content: finalSystemPrompt },
-          { role: "user", content: userMessage }
-        ]
-      })
+      body: JSON.stringify(upstreamBody)
     });
 
     const text = await upstream.text();
@@ -219,7 +326,18 @@ app.post("/api/complete", async (req, res) => {
     }
 
     const suggestion = normalizeSuggestion(data?.choices?.[0]?.message?.content || "");
-    res.json({ suggestion });
+    res.json({
+      suggestion,
+      trace: debugTrace
+        ? {
+            model: finalModel,
+            temperature: finalTemperature,
+            maxTokens: finalMaxTokens,
+            systemPrompt: finalSystemPrompt,
+            userPrompt: userMessage
+          }
+        : undefined
+    });
   } catch (err) {
     res.status(500).json({
       error: err instanceof Error ? err.message : "Unknown server error"
@@ -238,6 +356,7 @@ app.post("/api/continue-chapter", async (req, res) => {
     maxTokens,
     systemPrompt,
     targetChars,
+    debugTrace,
     novelTitle,
     chapterTitle,
     chapterSetting,
@@ -325,7 +444,18 @@ app.post("/api/continue-chapter", async (req, res) => {
     }
 
     const content = normalizeLongContent(data?.choices?.[0]?.message?.content || "");
-    res.json({ content });
+    res.json({
+      content,
+      trace: debugTrace
+        ? {
+            model: finalModel,
+            temperature: finalTemperature,
+            maxTokens: finalMaxTokens,
+            systemPrompt: finalSystemPrompt,
+            userPrompt: userMessage
+          }
+        : undefined
+    });
   } catch (err) {
     res.status(500).json({
       error: err instanceof Error ? err.message : "Unknown server error"
@@ -345,6 +475,7 @@ app.post("/api/polish", async (req, res) => {
     temperature,
     maxTokens,
     systemPrompt,
+    debugTrace,
     novelTitle,
     chapterTitle,
     chapterSetting,
@@ -429,7 +560,18 @@ app.post("/api/polish", async (req, res) => {
     }
 
     const polishedText = normalizeLongContent(data?.choices?.[0]?.message?.content || "");
-    res.json({ polishedText });
+    res.json({
+      polishedText,
+      trace: debugTrace
+        ? {
+            model: finalModel,
+            temperature: finalTemperature,
+            maxTokens: finalMaxTokens,
+            systemPrompt: finalSystemPrompt,
+            userPrompt: userMessage
+          }
+        : undefined
+    });
   } catch (err) {
     res.status(500).json({
       error: err instanceof Error ? err.message : "Unknown server error"
@@ -446,19 +588,17 @@ app.listen(port, () => {
 });
 
 function buildUserMessage(payload) {
-  const safeContext = safeText(payload.context, 8000);
+  const safeContext = safeText(payload.context, 420);
   const safeNovelTitle = safeText(payload.novelTitle, 120);
   const safeChapterTitle = safeText(payload.chapterTitle, 120);
   const safeChapterSetting = safeText(payload.chapterSetting, 1600);
-  const safeCharacterSetting = safeText(payload.characterSetting, 1600);
-  const beforeParagraphs = normalizeParagraphArray(payload.paragraphMemory?.before, 4);
-  const afterParagraphs = normalizeParagraphArray(payload.paragraphMemory?.after, 2);
+  const beforeParagraphs = normalizeParagraphArray(payload.paragraphMemory?.before, 2);
+  const afterParagraphs = normalizeParagraphArray(payload.paragraphMemory?.after, 1);
 
   const sections = [
     "请根据以下信息在光标处续写。",
     safeNovelTitle ? `小说标题：\n${safeNovelTitle}` : "",
     safeChapterTitle ? `章节标题：\n${safeChapterTitle}` : "",
-    safeCharacterSetting ? `人物设定：\n${safeCharacterSetting}` : "",
     safeChapterSetting ? `章节设定：\n${safeChapterSetting}` : "",
     beforeParagraphs.length
       ? `光标前段落记忆：\n${beforeParagraphs
@@ -470,7 +610,7 @@ function buildUserMessage(payload) {
           .map((item, index) => `${index + 1}. ${item}`)
           .join("\n")}`
       : "",
-    `光标前正文：\n${safeContext}`,
+    `最近正文片段（光标前）：\n${safeContext}`,
     "请直接续写下一句，只输出一句，不要重复上文。"
   ].filter(Boolean);
 
@@ -585,6 +725,48 @@ function estimatePolishMaxTokens(selectedText) {
   const sourceLength = safeText(selectedText, 20000).length;
   const estimated = Math.ceil(sourceLength * 1.4);
   return clampInt(estimated, 120, 2200, 600);
+}
+
+function extractStreamTextDelta(payload) {
+  const candidates = [
+    payload?.choices?.[0]?.delta?.content,
+    payload?.choices?.[0]?.delta?.text,
+    payload?.choices?.[0]?.delta?.output_text,
+    payload?.choices?.[0]?.message?.content,
+    payload?.choices?.[0]?.text,
+    payload?.delta?.content,
+    payload?.output_text
+  ];
+
+  for (const item of candidates) {
+    const text = extractTextFromAny(item);
+    if (text) return text;
+  }
+  return "";
+}
+
+function writeNdjson(res, obj) {
+  res.write(`${JSON.stringify(obj)}\n`);
+}
+
+function extractTextFromAny(value) {
+  if (typeof value === "string") return value;
+
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => extractTextFromAny(item))
+      .filter(Boolean)
+      .join("");
+  }
+
+  if (value && typeof value === "object") {
+    if (typeof value.text === "string") return value.text;
+    if (typeof value.content === "string") return value.content;
+    if (typeof value.output_text === "string") return value.output_text;
+    if (typeof value.value === "string") return value.value;
+  }
+
+  return "";
 }
 
 function takeFirstSentence(text) {

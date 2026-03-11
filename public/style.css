@@ -315,6 +315,136 @@ button.danger {
   gap: 8px;
 }
 
+.cursor-edit-panel {
+  margin-top: 6px;
+  border: 1px solid rgb(83 95 117 / 58%);
+  border-radius: 12px;
+  padding: 10px 12px;
+  color: #d7dfef;
+  background: linear-gradient(180deg, rgb(24 28 37 / 92%), rgb(16 19 26 / 91%));
+  box-shadow: 0 12px 30px rgb(9 12 20 / 28%);
+  backdrop-filter: blur(6px);
+}
+
+.cursor-edit-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.cursor-edit-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.cursor-edit-tag {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  border-radius: 999px;
+  border: 1px solid rgb(120 136 163 / 64%);
+  background: rgb(56 67 88 / 48%);
+  color: #e4ebfb;
+  font-size: 12px;
+  padding: 0 8px;
+}
+
+.cursor-edit-hint {
+  color: #adb9d2;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cursor-edit-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.cursor-edit-actions button {
+  height: 32px;
+  border-radius: 8px;
+  padding: 0 12px;
+  font-size: 13px;
+  border: 1px solid transparent;
+}
+
+.cursor-accept-btn {
+  color: #fff;
+  border-color: #2f81f7;
+  background: #2f81f7;
+}
+
+.cursor-accept-btn:hover {
+  background: #236ad3;
+}
+
+.cursor-reject-btn {
+  color: #d0d9eb;
+  border-color: rgb(97 108 130 / 66%);
+  background: rgb(45 52 65 / 92%);
+}
+
+.cursor-reject-btn:hover {
+  background: rgb(59 66 81 / 96%);
+}
+
+.cursor-edit-preview {
+  margin: 8px 0 0;
+  border: 1px solid rgb(80 92 116 / 54%);
+  border-radius: 10px;
+  background: rgb(11 14 21 / 58%);
+  color: #d9e1f0;
+  min-height: 54px;
+  max-height: 150px;
+  overflow: auto;
+  padding: 8px 10px;
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.api-trace-panel {
+  margin-top: 6px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #f7f2e6;
+  padding: 8px 10px;
+}
+
+.api-trace-panel summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.api-trace-grid {
+  margin-top: 8px;
+  display: grid;
+  gap: 8px;
+}
+
+.trace-pre {
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fffdf6;
+  padding: 8px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--muted);
+  min-height: 72px;
+  max-height: 160px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 #autoTabToggleBtn.auto-on {
   color: #fff;
   background: linear-gradient(135deg, var(--accent), var(--accent-2));
@@ -418,6 +548,19 @@ button.danger {
   .hint-row {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .cursor-edit-head {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .cursor-edit-actions {
+    width: 100%;
+  }
+
+  .cursor-edit-actions button {
+    flex: 1;
   }
 
   #suggestionPreview {

@@ -121,6 +121,34 @@
             </div>
           </div>
 
+          <section id="pendingEditPanel" class="cursor-edit-panel hidden" aria-live="polite">
+            <div class="cursor-edit-head">
+              <div class="cursor-edit-meta">
+                <span id="pendingEditType" class="cursor-edit-tag">建议</span>
+                <span id="pendingEditHint" class="cursor-edit-hint"></span>
+              </div>
+              <div class="cursor-edit-actions">
+                <button id="acceptPendingEditBtn" type="button" class="cursor-accept-btn">接受</button>
+                <button id="rejectPendingEditBtn" type="button" class="cursor-reject-btn">拒绝</button>
+              </div>
+            </div>
+            <pre id="pendingEditPreview" class="cursor-edit-preview"></pre>
+          </section>
+
+          <details id="apiTracePanel" class="api-trace-panel">
+            <summary>API 调试状态</summary>
+            <div class="api-trace-grid">
+              <label>
+                发送给 API 的提示词（System + User）
+                <pre id="apiPromptTrace" class="trace-pre"></pre>
+              </label>
+              <label>
+                API 流式输出
+                <pre id="apiStreamTrace" class="trace-pre"></pre>
+              </label>
+            </div>
+          </details>
+
           <section id="tabSettingsPanel" class="tab-settings-panel hidden">
             <h3>Tab 补全设置</h3>
             <div class="grid grid-4">

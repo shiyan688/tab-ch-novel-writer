@@ -7,6 +7,7 @@ const AUTOSAVE_MS = 600;
 const FILE_AUTOSAVE_MS = 700;
 const MIN_CONTEXT_LENGTH = 8;
 const MAX_CONTEXT_CHARS = 3000;
+const TAB_CONTEXT_CHARS = 420;
 const AUTO_WINDOW_MS = 60 * 1000;
 const FILE_MEMORY_SUFFIX = ".memory.json";
 const DEFAULT_TAB_SETTINGS = {
@@ -63,6 +64,15 @@ const statusEl = document.getElementById("status");
 const autosaveInfoEl = document.getElementById("autosaveInfo");
 const suggestionPreviewEl = document.getElementById("suggestionPreview");
 const folderInfoEl = document.getElementById("folderInfo");
+const apiTracePanel = document.getElementById("apiTracePanel");
+const apiPromptTraceEl = document.getElementById("apiPromptTrace");
+const apiStreamTraceEl = document.getElementById("apiStreamTrace");
+const pendingEditPanel = document.getElementById("pendingEditPanel");
+const pendingEditTypeEl = document.getElementById("pendingEditType");
+const pendingEditHintEl = document.getElementById("pendingEditHint");
+const pendingEditPreviewEl = document.getElementById("pendingEditPreview");
+const acceptPendingEditBtn = document.getElementById("acceptPendingEditBtn");
+const rejectPendingEditBtn = document.getElementById("rejectPendingEditBtn");
 const chapterTargetCharsInput = document.getElementById("chapterTargetChars");
 const continueChapterBtn = document.getElementById("continueChapterBtn");
 const autoTabToggleBtn = document.getElementById("autoTabToggleBtn");
@@ -98,6 +108,19 @@ let lastAutoContextHash = "";
 let tabSettings = { ...DEFAULT_TAB_SETTINGS };
 let styleSkills = [];
 let isPolishingSelection = false;
+let pendingEdit = null;
+let autoStatusCooldownUntil = 0;
+let lastAutoStatusKey = "";
+let promptDefaults = {
+  tabSystemPrompt: "",
+  chapterSystemPrompt: "",
+  polishSystemPrompt: "",
+  tabTemperature: 0.8,
+  chapterTemperature: 0.9,
+  tabMaxTokens: DEFAULT_TAB_SETTINGS.maxTokens,
+  chapterMaxTokens: 1600,
+  contextChars: MAX_CONTEXT_CHARS
+};
 
 initialize().catch((err) => {
   setStatus(`状态：初始化失败 - ${err.message}`);
@@ -176,6 +199,14 @@ function bindEvents() {
     window.open("/style-skills.html", "_blank", "noopener");
   });
 
+  acceptPendingEditBtn?.addEventListener("click", () => {
+    acceptPendingEdit();
+  });
+
+  rejectPendingEditBtn?.addEventListener("click", () => {
+    rejectPendingEdit();
+  });
+
   novelTitleInput.addEventListener("input", () => {
     project.title = novelTitleInput.value;
     queueAutosave();
@@ -215,6 +246,9 @@ function bindEvents() {
     const chapter = getCurrentChapter();
     chapter.content = editor.value;
     chapter.updatedAt = Date.now();
+    if (pendingEdit && editor.value !== pendingEdit.baseContent) {
+      clearPendingEdit({ silent: true });
+    }
     clearSuggestion();
     if (isFileMode()) {
       queueFileAutosave();
@@ -251,6 +285,12 @@ function bindEvents() {
   });
 
   editor.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && event.ctrlKey && pendingEdit) {
+      event.preventDefault();
+      acceptPendingEdit();
+      return;
+    }
+
     if (event.key === "Tab" && suggestion) {
       event.preventDefault();
       acceptSuggestion();
@@ -258,6 +298,11 @@ function bindEvents() {
     }
 
     if (event.key === "Escape") {
+      if (pendingEdit) {
+        event.preventDefault();
+        rejectPendingEdit();
+        return;
+      }
       clearSuggestion();
       setStatus("状态：已取消建议");
       return;
@@ -445,6 +490,7 @@ function renderCurrentChapter() {
   chapterSettingInput.value = chapter.setting || "";
   editor.value = chapter.content || "";
   setFileModeUI(false);
+  clearPendingEdit({ silent: true });
   clearSuggestion();
 }
 
@@ -691,6 +737,23 @@ async function loadServerDefaults() {
     const response = await fetch("/api/default-config");
     const config = await response.json();
 
+    promptDefaults = {
+      tabSystemPrompt: asText(config.tabSystemPrompt),
+      chapterSystemPrompt: asText(config.chapterSystemPrompt),
+      polishSystemPrompt: asText(config.polishSystemPrompt),
+      tabTemperature:
+        typeof config.temperature === "number"
+          ? config.temperature
+          : clampFloat(config.temperature, 0, 2, 0.8),
+      chapterTemperature:
+        typeof config.chapterTemperature === "number"
+          ? config.chapterTemperature
+          : clampFloat(config.chapterTemperature, 0, 2, 0.9),
+      tabMaxTokens: clampInt(config.maxTokens, 48, 64, DEFAULT_TAB_SETTINGS.maxTokens),
+      chapterMaxTokens: clampInt(config.chapterMaxTokens, 200, 4000, 1600),
+      contextChars: clampInt(config.contextChars, 300, 8000, MAX_CONTEXT_CHARS)
+    };
+
     if (!apiBaseUrlInput.value.trim()) {
       apiBaseUrlInput.value = asText(config.apiBaseUrl, "https://api.openai.com/v1");
     }
@@ -703,6 +766,16 @@ async function loadServerDefaults() {
       chapterModelInput.value = asText(config.chapterModel, "gpt-4.1-mini");
     }
   } catch {
+    promptDefaults = {
+      tabSystemPrompt: "",
+      chapterSystemPrompt: "",
+      polishSystemPrompt: "",
+      tabTemperature: 0.8,
+      chapterTemperature: 0.9,
+      tabMaxTokens: DEFAULT_TAB_SETTINGS.maxTokens,
+      chapterMaxTokens: 1600,
+      contextChars: MAX_CONTEXT_CHARS
+    };
     if (!apiBaseUrlInput.value.trim()) {
       apiBaseUrlInput.value = "https://api.openai.com/v1";
     }
@@ -730,6 +803,7 @@ function triggerDebouncedCompletion() {
   if (!defaultsLoaded) return;
   if (!autoTabEnabled) return;
 
+  setAutoStatus("状态：自动 Tab 等待中，暂停输入后将检查触发条件", "auto_waiting");
   clearTimeout(completionDebounceTimer);
   completionDebounceTimer = setTimeout(() => {
     requestCompletion({ reason: "auto" });
@@ -740,6 +814,14 @@ async function requestCompletion(options = {}) {
   if (!defaultsLoaded) return;
   const reason = options.reason || "manual";
   const isAuto = reason === "auto";
+  if (pendingEdit) {
+    if (!isAuto) {
+      setStatus("状态：请先接受或拒绝当前续写/润色建议");
+    } else {
+      setAutoStatus("状态：自动 Tab 未触发：有待处理的续写/润色建议", "auto_block_pending");
+    }
+    return;
+  }
 
   const chapter = getCurrentChapter();
   const cursor = editor.selectionStart;
@@ -750,19 +832,36 @@ async function requestCompletion(options = {}) {
   const activeChapterTitle = chapterTitleInput.value || chapter.title;
 
   if (isAuto) {
-    if (!autoTabEnabled) return;
-    if (selectionStart !== selectionEnd) return;
-    if (isComposing) return;
-    if (suggestion) return;
+    if (!autoTabEnabled) {
+      setAutoStatus("状态：自动 Tab 未触发：开关为关闭", "auto_block_toggle");
+      return;
+    }
+    if (selectionStart !== selectionEnd) {
+      setAutoStatus("状态：自动 Tab 未触发：当前有选中文本", "auto_block_selection");
+      return;
+    }
+    if (isComposing) {
+      setAutoStatus("状态：自动 Tab 未触发：输入法组合中", "auto_block_composing");
+      return;
+    }
+    if (suggestion) {
+      setAutoStatus("状态：自动 Tab 未触发：存在未接受的建议", "auto_block_existing_suggestion");
+      return;
+    }
   }
 
   const beforeCursor = chapter.content.slice(0, cursor);
-  const context = beforeCursor.slice(-MAX_CONTEXT_CHARS);
+  const context = beforeCursor.slice(-TAB_CONTEXT_CHARS);
 
   if (context.trim().length < MIN_CONTEXT_LENGTH) {
     clearSuggestion();
     if (!isAuto) {
       setStatus("状态：继续输入以触发补全");
+    } else {
+      setAutoStatus(
+        `状态：自动 Tab 未触发：上下文不足（至少 ${MIN_CONTEXT_LENGTH} 字）`,
+        "auto_block_context_short"
+      );
     }
     return;
   }
@@ -772,15 +871,31 @@ async function requestCompletion(options = {}) {
     contextHash = hashText(
       `${project.currentChapterId}|${selectionStart}|${context.slice(-800)}|${activeChapterSetting.slice(-200)}|${activeCharacterSetting.slice(-200)}|${activeFileName}`
     );
-    if (contextHash === lastAutoContextHash) return;
+    if (contextHash === lastAutoContextHash) {
+      setAutoStatus("状态：自动 Tab 跳过：上下文未变化", "auto_skip_same_context");
+      return;
+    }
 
     const now = Date.now();
-    if (now - lastAutoRequestAt < tabSettings.autoMinIntervalMs) return;
+    if (now - lastAutoRequestAt < tabSettings.autoMinIntervalMs) {
+      const remain = tabSettings.autoMinIntervalMs - (now - lastAutoRequestAt);
+      setAutoStatus(
+        `状态：自动 Tab 限速中：还需等待 ${Math.ceil(remain / 1000)} 秒`,
+        "auto_skip_min_interval"
+      );
+      return;
+    }
 
     autoRequestTimestamps = autoRequestTimestamps.filter(
       (item) => now - item < AUTO_WINDOW_MS
     );
-    if (autoRequestTimestamps.length >= tabSettings.autoMaxPerMinute) return;
+    if (autoRequestTimestamps.length >= tabSettings.autoMaxPerMinute) {
+      setAutoStatus(
+        `状态：自动 Tab 限流中：1 分钟最多 ${tabSettings.autoMaxPerMinute} 次`,
+        "auto_skip_rate_limit"
+      );
+      return;
+    }
 
     lastAutoRequestAt = now;
     autoRequestTimestamps.push(now);
@@ -788,12 +903,31 @@ async function requestCompletion(options = {}) {
   }
 
   if (inFlightAbortController) {
-    if (isAuto) return;
+    if (isAuto) {
+      setAutoStatus("状态：自动 Tab 跳过：已有请求进行中", "auto_skip_inflight");
+      return;
+    }
     inFlightAbortController.abort();
   }
 
   inFlightAbortController = new AbortController();
-  setStatus("状态：正在生成建议...");
+  prefillTabPromptTrace({
+    context,
+    chapterContent: chapter.content,
+    cursor,
+    chapterTitle: activeChapterTitle,
+    chapterSetting: activeChapterSetting
+  });
+  setApiStreamTrace("（提示词已更新，准备发送请求）");
+  if (isAuto) {
+    setStatus("状态：自动 Tab 已触发，提示词已更新，正在发送 API 请求...");
+  } else {
+    setStatus("状态：提示词已更新，正在发送 API 请求...");
+  }
+  setApiStreamTrace("（请求已发送，等待流式输出）");
+  if (apiTracePanel) {
+    apiTracePanel.open = true;
+  }
 
   try {
     const response = await fetch("/api/complete", {
@@ -801,6 +935,7 @@ async function requestCompletion(options = {}) {
       headers: { "Content-Type": "application/json" },
       signal: inFlightAbortController.signal,
       body: JSON.stringify({
+        stream: true,
         context,
         apiBaseUrl: apiBaseUrlInput.value.trim(),
         apiKey: apiKeyInput.value.trim(),
@@ -809,17 +944,21 @@ async function requestCompletion(options = {}) {
         novelTitle: project.title,
         chapterTitle: activeChapterTitle,
         chapterSetting: activeChapterSetting,
-        characterSetting: activeCharacterSetting,
         paragraphMemory: collectParagraphMemory(chapter.content, cursor)
       })
     });
 
-    const payload = await response.json();
     if (!response.ok) {
+      const payload = await response.json();
       throw new Error(payload.error || "补全请求失败");
     }
 
-    const normalized = normalizeSuggestion(payload.suggestion, context);
+    if (!response.body) {
+      throw new Error("流式响应为空");
+    }
+
+    const streamResult = await readCompletionStream(response.body);
+    const normalized = normalizeSuggestion(streamResult.suggestion, context);
     if (!normalized) {
       clearSuggestion();
       setStatus("状态：未生成可用建议");
@@ -830,7 +969,12 @@ async function requestCompletion(options = {}) {
     renderSuggestion();
     setStatus("状态：建议已生成，按 Tab 接受");
   } catch (err) {
-    if (err.name === "AbortError") return;
+    if (err.name === "AbortError") {
+      if (isAuto) {
+        setAutoStatus("状态：自动 Tab 请求已取消", "auto_abort");
+      }
+      return;
+    }
     clearSuggestion();
     setStatus(`状态：请求失败 - ${err.message}`);
   } finally {
@@ -841,6 +985,10 @@ async function requestCompletion(options = {}) {
 async function requestChapterContinuation() {
   if (!defaultsLoaded) return;
   if (chapterAbortController) return;
+  if (pendingEdit) {
+    setStatus("状态：请先接受或拒绝当前建议");
+    return;
+  }
 
   const chapter = getCurrentChapter();
   const start = editor.selectionStart;
@@ -861,6 +1009,16 @@ async function requestChapterContinuation() {
   chapterAbortController = new AbortController();
   setContinueChapterBusy(true);
   setStatus("状态：正在续写完整章节...");
+  prefillChapterPromptTrace({
+    context,
+    targetChars,
+    chapterTitle: activeChapterTitle,
+    chapterSetting: activeChapterSetting,
+    characterSetting: activeCharacterSetting
+  });
+  setApiStreamTrace("（提示词已更新，准备发送请求）");
+  setStatus("状态：提示词已更新，正在发送续写请求...");
+  setApiStreamTrace("（请求已发送，等待返回）");
 
   try {
     const response = await fetch("/api/continue-chapter", {
@@ -876,7 +1034,8 @@ async function requestChapterContinuation() {
         novelTitle: project.title,
         chapterTitle: activeChapterTitle,
         chapterSetting: activeChapterSetting,
-        characterSetting: activeCharacterSetting
+        characterSetting: activeCharacterSetting,
+        debugTrace: true
       })
     });
 
@@ -891,17 +1050,22 @@ async function requestChapterContinuation() {
       return;
     }
 
+    applyDebugTraceToPanel(payload.trace, longText);
     const insertText = formatChapterInsertion(beforeCursor, longText);
-    editor.setRangeText(insertText, start, end, "end");
-    chapter.content = editor.value;
-    chapter.updatedAt = Date.now();
+    showPendingEdit({
+      typeLabel: "续写建议",
+      hint: `将插入约 ${longText.length} 字内容`,
+      preview: insertText,
+      start,
+      end,
+      replacement: insertText,
+      baseContent: editor.value,
+      selectMode: "end",
+      acceptStatus: "状态：已接受续写建议",
+      rejectStatus: "状态：已拒绝续写建议"
+    });
     clearSuggestion();
-    if (isFileMode()) {
-      queueFileAutosave();
-    } else {
-      queueAutosave();
-    }
-    setStatus("状态：整章续写已插入");
+    setStatus("状态：续写建议已生成，请选择接受或拒绝");
   } catch (err) {
     if (err.name === "AbortError") {
       setStatus("状态：已取消整章续写");
@@ -917,6 +1081,10 @@ async function requestChapterContinuation() {
 async function polishSelectedText() {
   if (!defaultsLoaded) return;
   if (isPolishingSelection) return;
+  if (pendingEdit) {
+    setStatus("状态：请先接受或拒绝当前建议");
+    return;
+  }
 
   const start = editor.selectionStart;
   const end = editor.selectionEnd;
@@ -939,6 +1107,17 @@ async function polishSelectedText() {
 
   setPolishSelectionBusy(true);
   setStatus("状态：正在润色选中文本...");
+  prefillPolishPromptTrace({
+    selectedText,
+    styleRequirement,
+    styleSkillPrompt,
+    chapterTitle: chapterTitleInput.value || chapter.title,
+    chapterSetting: chapterSettingInput.value,
+    characterSetting: characterSettingInput.value
+  });
+  setApiStreamTrace("（提示词已更新，准备发送请求）");
+  setStatus("状态：提示词已更新，正在发送润色请求...");
+  setApiStreamTrace("（请求已发送，等待返回）");
 
   try {
     const response = await fetch("/api/polish", {
@@ -954,7 +1133,8 @@ async function polishSelectedText() {
         novelTitle: project.title,
         chapterTitle: chapterTitleInput.value || chapter.title,
         chapterSetting: chapterSettingInput.value,
-        characterSetting: characterSettingInput.value
+        characterSetting: characterSettingInput.value,
+        debugTrace: true
       })
     });
 
@@ -969,18 +1149,21 @@ async function polishSelectedText() {
       return;
     }
 
-    editor.setRangeText(polishedText, start, end, "select");
-    const chapterNow = getCurrentChapter();
-    chapterNow.content = editor.value;
-    chapterNow.updatedAt = Date.now();
-
+    applyDebugTraceToPanel(payload.trace, polishedText);
+    showPendingEdit({
+      typeLabel: "润色建议",
+      hint: `将替换选中的 ${selectedText.length} 字`,
+      preview: polishedText,
+      start,
+      end,
+      replacement: polishedText,
+      baseContent: editor.value,
+      selectMode: "select",
+      acceptStatus: "状态：已接受润色建议",
+      rejectStatus: "状态：已拒绝润色建议"
+    });
     clearSuggestion();
-    if (isFileMode()) {
-      queueFileAutosave();
-    } else {
-      queueAutosave();
-    }
-    setStatus("状态：选中文本已润色");
+    setStatus("状态：润色建议已生成，请选择接受或拒绝");
   } catch (err) {
     setStatus(`状态：润色失败 - ${err.message}`);
   } finally {
@@ -1049,6 +1232,101 @@ function formatChapterInsertion(beforeCursor, longText) {
   return `${prefix}${longText}`;
 }
 
+function showPendingEdit(payload) {
+  const baseContent =
+    typeof payload.baseContent === "string" ? payload.baseContent : editor.value;
+  const start = clampInt(payload.start, 0, baseContent.length, editor.selectionStart);
+  const end = clampInt(payload.end, start, baseContent.length, editor.selectionEnd);
+  pendingEdit = {
+    typeLabel: asText(payload.typeLabel, "建议"),
+    hint: asText(payload.hint),
+    preview: asText(payload.preview || payload.replacement),
+    replacement: asText(payload.replacement),
+    start,
+    end,
+    baseContent,
+    selectMode: asText(payload.selectMode, "end"),
+    acceptStatus: asText(payload.acceptStatus, "状态：已接受建议"),
+    rejectStatus: asText(payload.rejectStatus, "状态：已拒绝建议")
+  };
+  renderPendingEdit();
+}
+
+function renderPendingEdit() {
+  if (!pendingEditPanel || !pendingEditTypeEl || !pendingEditHintEl || !pendingEditPreviewEl) {
+    return;
+  }
+
+  if (!pendingEdit) {
+    pendingEditPanel.classList.add("hidden");
+    pendingEditTypeEl.textContent = "建议";
+    pendingEditHintEl.textContent = "";
+    pendingEditPreviewEl.textContent = "";
+    return;
+  }
+
+  pendingEditPanel.classList.remove("hidden");
+  pendingEditTypeEl.textContent = pendingEdit.typeLabel;
+  pendingEditHintEl.textContent = pendingEdit.hint;
+  pendingEditPreviewEl.textContent = formatPendingPreview(pendingEdit.preview);
+}
+
+function acceptPendingEdit() {
+  if (!pendingEdit) return;
+  const proposal = pendingEdit;
+
+  if (editor.value !== proposal.baseContent) {
+    pendingEdit = null;
+    renderPendingEdit();
+    setStatus("状态：正文已发生变化，当前建议已失效，请重新生成");
+    return;
+  }
+
+  pendingEdit = null;
+  renderPendingEdit();
+  editor.setRangeText(proposal.replacement, proposal.start, proposal.end, proposal.selectMode);
+
+  const chapter = getCurrentChapter();
+  chapter.content = editor.value;
+  chapter.updatedAt = Date.now();
+
+  clearSuggestion();
+  if (isFileMode()) {
+    queueFileAutosave();
+  } else {
+    queueAutosave();
+  }
+  triggerDebouncedCompletion();
+  setStatus(proposal.acceptStatus);
+  editor.focus();
+}
+
+function rejectPendingEdit(options = {}) {
+  if (!pendingEdit) return;
+  const status = pendingEdit.rejectStatus;
+  pendingEdit = null;
+  renderPendingEdit();
+  if (!options.silent) {
+    setStatus(status);
+  }
+}
+
+function clearPendingEdit(options = {}) {
+  if (!pendingEdit) return;
+  pendingEdit = null;
+  renderPendingEdit();
+  if (!options.silent) {
+    setStatus("状态：已取消建议");
+  }
+}
+
+function formatPendingPreview(text) {
+  const cleaned = String(text || "").replace(/\r/g, "").trim();
+  if (!cleaned) return "(建议内容为空)";
+  if (cleaned.length <= 520) return cleaned;
+  return `${cleaned.slice(0, 520)}...`;
+}
+
 function acceptSuggestion() {
   const start = editor.selectionStart;
   const end = editor.selectionEnd;
@@ -1095,8 +1373,304 @@ function renderSuggestion() {
   ghostSuggestionEl.classList.add("visible");
 }
 
+function resetApiTrace() {
+  if (apiPromptTraceEl) apiPromptTraceEl.textContent = "";
+  if (apiStreamTraceEl) apiStreamTraceEl.textContent = "";
+}
+
+function prefillTabPromptTrace(payload) {
+  const paragraphMemory = collectParagraphMemory(payload.chapterContent || "", payload.cursor || 0);
+  const trace = {
+    model: modelInput.value.trim() || "",
+    temperature: promptDefaults.tabTemperature,
+    maxTokens: tabSettings.maxTokens,
+    systemPrompt: resolveSystemPrompt("tab"),
+    userPrompt: buildTabUserPromptForTrace({
+      context: payload.context,
+      novelTitle: project.title,
+      chapterTitle: payload.chapterTitle,
+      chapterSetting: payload.chapterSetting,
+      paragraphMemory
+    })
+  };
+  setApiPromptTrace(trace);
+}
+
+function prefillChapterPromptTrace(payload) {
+  const targetChars = clampInt(payload.targetChars, 300, 5000, 1200);
+  const inferredMaxTokens = estimateChapterMaxTokensForTrace(targetChars);
+  const trace = {
+    model: chapterModelInput.value.trim() || "",
+    temperature: promptDefaults.chapterTemperature,
+    maxTokens: inferredMaxTokens,
+    systemPrompt: resolveSystemPrompt("chapter"),
+    userPrompt: buildChapterUserPromptForTrace({
+      context: payload.context,
+      novelTitle: project.title,
+      chapterTitle: payload.chapterTitle,
+      chapterSetting: payload.chapterSetting,
+      characterSetting: payload.characterSetting,
+      targetChars
+    })
+  };
+  setApiPromptTrace(trace);
+}
+
+function prefillPolishPromptTrace(payload) {
+  const trace = {
+    model: chapterModelInput.value.trim() || "",
+    temperature: promptDefaults.chapterTemperature,
+    maxTokens: estimatePolishMaxTokensForTrace(payload.selectedText),
+    systemPrompt: resolveSystemPrompt("polish"),
+    userPrompt: buildPolishUserPromptForTrace({
+      selectedText: payload.selectedText,
+      styleRequirement: payload.styleRequirement,
+      styleSkillPrompt: payload.styleSkillPrompt,
+      novelTitle: project.title,
+      chapterTitle: payload.chapterTitle,
+      chapterSetting: payload.chapterSetting,
+      characterSetting: payload.characterSetting
+    })
+  };
+  setApiPromptTrace(trace);
+}
+
+function resolveSystemPrompt(kind) {
+  const value =
+    kind === "tab"
+      ? promptDefaults.tabSystemPrompt
+      : kind === "chapter"
+        ? promptDefaults.chapterSystemPrompt
+        : promptDefaults.polishSystemPrompt;
+  return value || "（系统提示词由服务端配置，当前未下发）";
+}
+
+function buildTabUserPromptForTrace(payload) {
+  const safeContext = safeTraceText(payload.context, 420);
+  const safeNovelTitle = safeTraceText(payload.novelTitle, 120);
+  const safeChapterTitle = safeTraceText(payload.chapterTitle, 120);
+  const safeChapterSetting = safeTraceText(payload.chapterSetting, 1600);
+  const beforeParagraphs = normalizeTraceParagraphArray(payload.paragraphMemory?.before, 2);
+  const afterParagraphs = normalizeTraceParagraphArray(payload.paragraphMemory?.after, 1);
+
+  const sections = [
+    "请根据以下信息在光标处续写。",
+    safeNovelTitle ? `小说标题：\n${safeNovelTitle}` : "",
+    safeChapterTitle ? `章节标题：\n${safeChapterTitle}` : "",
+    safeChapterSetting ? `章节设定：\n${safeChapterSetting}` : "",
+    beforeParagraphs.length
+      ? `光标前段落记忆：\n${beforeParagraphs
+          .map((item, index) => `${index + 1}. ${item}`)
+          .join("\n")}`
+      : "",
+    afterParagraphs.length
+      ? `光标后段落记忆：\n${afterParagraphs
+          .map((item, index) => `${index + 1}. ${item}`)
+          .join("\n")}`
+      : "",
+    `最近正文片段（光标前）：\n${safeContext}`,
+    "请直接续写下一句，只输出一句，不要重复上文。"
+  ].filter(Boolean);
+
+  return sections.join("\n\n");
+}
+
+function buildChapterUserPromptForTrace(payload) {
+  const safeContext = safeTraceText(payload.context, 16000);
+  const safeNovelTitle = safeTraceText(payload.novelTitle, 120);
+  const safeChapterTitle = safeTraceText(payload.chapterTitle, 120);
+  const safeChapterSetting = safeTraceText(payload.chapterSetting, 2000);
+  const safeCharacterSetting = safeTraceText(payload.characterSetting, 2000);
+  const safeTargetChars = clampInt(payload.targetChars, 300, 5000, 1200);
+
+  const sections = [
+    "请根据以下信息续写完整章节内容。",
+    safeNovelTitle ? `小说标题：\n${safeNovelTitle}` : "",
+    safeChapterTitle ? `章节标题：\n${safeChapterTitle}` : "",
+    safeCharacterSetting ? `人物设定：\n${safeCharacterSetting}` : "",
+    safeChapterSetting ? `章节设定：\n${safeChapterSetting}` : "",
+    safeContext ? `已有正文（光标前）：\n${safeContext}` : "",
+    `目标长度：约 ${safeTargetChars} 字。`,
+    "请直接输出续写正文。"
+  ].filter(Boolean);
+
+  return sections.join("\n\n");
+}
+
+function buildPolishUserPromptForTrace(payload) {
+  const safeSelectedText = safeTraceText(payload.selectedText, 16000);
+  const safeNovelTitle = safeTraceText(payload.novelTitle, 120);
+  const safeChapterTitle = safeTraceText(payload.chapterTitle, 120);
+  const safeChapterSetting = safeTraceText(payload.chapterSetting, 2000);
+  const safeCharacterSetting = safeTraceText(payload.characterSetting, 2000);
+  const safeStyleSkillPrompt = safeTraceText(payload.styleSkillPrompt, 4000);
+  const safeStyleRequirement = safeTraceText(payload.styleRequirement, 1000);
+
+  const sections = [
+    "请润色下面这段已写好的正文。",
+    safeNovelTitle ? `小说标题：\n${safeNovelTitle}` : "",
+    safeChapterTitle ? `章节标题：\n${safeChapterTitle}` : "",
+    safeCharacterSetting ? `人物设定：\n${safeCharacterSetting}` : "",
+    safeChapterSetting ? `章节设定：\n${safeChapterSetting}` : "",
+    safeStyleSkillPrompt ? `风格预设：\n${safeStyleSkillPrompt}` : "",
+    safeStyleRequirement ? `额外风格要求：\n${safeStyleRequirement}` : "",
+    `原文：\n${safeSelectedText}`,
+    "请只输出润色后的正文，不要解释。"
+  ].filter(Boolean);
+
+  return sections.join("\n\n");
+}
+
+function safeTraceText(value, maxLen) {
+  if (typeof value !== "string") return "";
+  return value.replace(/\r/g, "").trim().slice(0, maxLen);
+}
+
+function normalizeTraceParagraphArray(value, maxItems) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => safeTraceText(item, 360))
+    .filter(Boolean)
+    .slice(-maxItems);
+}
+
+function estimateChapterMaxTokensForTrace(targetChars) {
+  const safeTarget = clampInt(targetChars, 300, 5000, 1200);
+  const estimated = Math.ceil(safeTarget * 1.5);
+  return clampInt(estimated, 200, 4000, promptDefaults.chapterMaxTokens);
+}
+
+function estimatePolishMaxTokensForTrace(selectedText) {
+  const sourceLength = safeTraceText(selectedText, 20000).length;
+  const estimated = Math.ceil(sourceLength * 1.4);
+  return clampInt(estimated, 120, 2200, 600);
+}
+
+function setApiStreamTrace(text) {
+  if (!apiStreamTraceEl) return;
+  apiStreamTraceEl.textContent = String(text || "");
+}
+
+function setApiPromptTrace(meta) {
+  if (!apiPromptTraceEl) return;
+
+  const parts = [
+    `model: ${meta.model || ""}`,
+    `temperature: ${meta.temperature ?? ""}`,
+    `max_tokens: ${meta.maxTokens ?? ""}`,
+    "",
+    "[System Prompt]",
+    meta.systemPrompt || "",
+    "",
+    "[User Prompt]",
+    meta.userPrompt || ""
+  ];
+  apiPromptTraceEl.textContent = parts.join("\n");
+  if (apiTracePanel) {
+    apiTracePanel.open = true;
+  }
+}
+
+function appendApiStreamTrace(text) {
+  if (!apiStreamTraceEl || !text) return;
+  apiStreamTraceEl.textContent += text;
+
+  if (apiStreamTraceEl.textContent.length > 12000) {
+    apiStreamTraceEl.textContent = apiStreamTraceEl.textContent.slice(-12000);
+  }
+}
+
+function applyDebugTraceToPanel(trace, outputText) {
+  if (trace && typeof trace === "object") {
+    setApiPromptTrace(trace);
+  }
+  setApiStreamTrace(outputText || "");
+}
+
+async function readCompletionStream(bodyStream) {
+  const reader = bodyStream.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let streamText = "";
+  let doneSuggestion = "";
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() || "";
+
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      if (!line) continue;
+
+      const event = safeParseJson(line);
+      if (!event) continue;
+
+      if (event.type === "meta") {
+        setApiPromptTrace(event);
+        continue;
+      }
+
+      if (event.type === "delta") {
+        const text = String(event.text || "");
+        streamText += text;
+        appendApiStreamTrace(text);
+        continue;
+      }
+
+      if (event.type === "done") {
+        doneSuggestion = String(event.suggestion || "");
+        if (!streamText && doneSuggestion) {
+          appendApiStreamTrace(doneSuggestion);
+        }
+        continue;
+      }
+
+      if (event.type === "error") {
+        throw new Error(event.error || "流式补全失败");
+      }
+    }
+  }
+
+  const tailEvent = safeParseJson(buffer.trim());
+  if (tailEvent?.type === "done") {
+    doneSuggestion = String(tailEvent.suggestion || doneSuggestion);
+    if (!streamText && doneSuggestion) {
+      appendApiStreamTrace(doneSuggestion);
+    }
+  } else if (tailEvent?.type === "delta") {
+    const text = String(tailEvent.text || "");
+    streamText += text;
+    appendApiStreamTrace(text);
+  }
+
+  return { suggestion: doneSuggestion || streamText };
+}
+
+function safeParseJson(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
 function setStatus(text) {
   statusEl.textContent = text;
+}
+
+function setAutoStatus(text, key) {
+  const now = Date.now();
+  const safeKey = String(key || "auto");
+  if (safeKey === lastAutoStatusKey && now < autoStatusCooldownUntil) {
+    return;
+  }
+  lastAutoStatusKey = safeKey;
+  autoStatusCooldownUntil = now + 1200;
+  setStatus(text);
 }
 
 function setContinueChapterBusy(isBusy) {
@@ -1125,6 +1699,12 @@ function safeFileName(name) {
 
 function clampInt(value, min, max, fallback) {
   const parsed = Number.parseInt(String(value), 10);
+  if (Number.isNaN(parsed)) return fallback;
+  return Math.min(max, Math.max(min, parsed));
+}
+
+function clampFloat(value, min, max, fallback) {
+  const parsed = Number.parseFloat(String(value));
   if (Number.isNaN(parsed)) return fallback;
   return Math.min(max, Math.max(min, parsed));
 }
@@ -1289,6 +1869,7 @@ async function openFileFromExplorer(fileName) {
     characterSettingInput.value = project.characterSetting;
     editor.value = chapter.content;
 
+    clearPendingEdit({ silent: true });
     clearSuggestion();
     setStatus(`状态：已打开文件 ${fileName}`);
   } catch (err) {
