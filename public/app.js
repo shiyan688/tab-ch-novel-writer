@@ -3,6 +3,8 @@ const PROJECT_STORAGE_KEY = "novel-editor-project-v2";
 const AUTO_TAB_ENABLED_KEY = "novel-editor-auto-tab-enabled-v1";
 const TAB_SETTINGS_KEY = "novel-editor-tab-settings-v1";
 const STYLE_SKILLS_KEY = "novel-editor-style-skills-v1";
+const SYSTEM_PROMPTS_KEY = "novel-editor-system-prompts-v1";
+const THEME_MODE_KEY = "novel-editor-theme-mode-v1";
 const AUTOSAVE_MS = 600;
 const FILE_AUTOSAVE_MS = 700;
 const MIN_CONTEXT_LENGTH = 8;
@@ -88,6 +90,26 @@ const styleSkillSelect = document.getElementById("styleSkillSelect");
 const polishRequirementInput = document.getElementById("polishRequirementInput");
 const polishSelectionBtn = document.getElementById("polishSelectionBtn");
 const openStyleSkillsBtn = document.getElementById("openStyleSkillsBtn");
+const openStyleSkillsQuickBtn = document.getElementById("openStyleSkillsQuickBtn");
+
+const settingsModal = document.getElementById("settingsModal");
+const closeSettingsModalBtn = document.getElementById("closeSettingsModalBtn");
+const themeOptionsEl = document.getElementById("themeOptions");
+const tabSystemPromptInput = document.getElementById("tabSystemPromptInput");
+const chapterSystemPromptInput = document.getElementById("chapterSystemPromptInput");
+const polishSystemPromptInput = document.getElementById("polishSystemPromptInput");
+const saveSystemPromptsBtn = document.getElementById("saveSystemPromptsBtn");
+const resetSystemPromptsBtn = document.getElementById("resetSystemPromptsBtn");
+
+const styleSkillsModal = document.getElementById("styleSkillsModal");
+const closeStyleSkillsModalBtn = document.getElementById("closeStyleSkillsModalBtn");
+const styleSkillsCardsEl = document.getElementById("styleSkillsCards");
+const styleSkillEditorTitleEl = document.getElementById("styleSkillEditorTitle");
+const styleSkillNameInput = document.getElementById("styleSkillNameInput");
+const styleSkillPromptInput = document.getElementById("styleSkillPromptInput");
+const styleSkillSaveBtn = document.getElementById("styleSkillSaveBtn");
+const styleSkillCancelBtn = document.getElementById("styleSkillCancelBtn");
+const styleSkillDeleteBtn = document.getElementById("styleSkillDeleteBtn");
 
 let project = createDefaultProject();
 let suggestion = "";
@@ -111,6 +133,9 @@ let isPolishingSelection = false;
 let pendingEdit = null;
 let autoStatusCooldownUntil = 0;
 let lastAutoStatusKey = "";
+let systemPromptOverrides = { tab: "", chapter: "", polish: "" };
+let editingStyleSkillId = "";
+let themeMode = "dark";
 let promptDefaults = {
   tabSystemPrompt: "",
   chapterSystemPrompt: "",
@@ -127,16 +152,23 @@ initialize().catch((err) => {
 });
 
 async function initialize() {
+  loadThemeMode();
+  applyThemeMode();
   bindEvents();
   loadAutoTabState();
   renderAutoTabToggle();
   loadTabSettings();
   renderTabSettingsInputs();
   renderTabSettingsPanel(false);
+  loadSystemPromptOverrides();
   loadStyleSkills();
+  renderThemeOptions();
   renderStyleSkillSelect();
   loadApiConfigFromLocal();
   await loadServerDefaults();
+  renderSystemPromptInputs();
+  renderStyleSkillEditor();
+  renderStyleSkillCards();
   loadProjectFromLocal();
   renderProject();
   defaultsLoaded = true;
@@ -145,6 +177,16 @@ async function initialize() {
 }
 
 function bindEvents() {
+  themeOptionsEl?.addEventListener("click", (event) => {
+    const origin = event.target instanceof Element ? event.target : null;
+    if (!origin) return;
+    const button = origin.closest("button[data-theme-mode]");
+    if (!(button instanceof HTMLButtonElement)) return;
+    const nextMode = button.dataset.themeMode;
+    if (!nextMode) return;
+    setThemeMode(nextMode);
+  });
+
   saveApiConfigBtn.addEventListener("click", () => {
     saveApiConfigToLocal();
     setStatus("状态：API 配置已保存");
@@ -163,9 +205,8 @@ function bindEvents() {
     setStatus(autoTabEnabled ? "状态：自动 Tab 已开启" : "状态：自动 Tab 已关闭");
   });
 
-  tabSettingsToggleBtn.addEventListener("click", () => {
-    const isHidden = tabSettingsPanel.classList.contains("hidden");
-    renderTabSettingsPanel(isHidden);
+  tabSettingsToggleBtn?.addEventListener("click", () => {
+    openSettingsModal();
   });
 
   saveTabSettingsBtn.addEventListener("click", () => {
@@ -195,8 +236,41 @@ function bindEvents() {
     await polishSelectedText();
   });
 
-  openStyleSkillsBtn.addEventListener("click", () => {
-    window.open("/style-skills.html", "_blank", "noopener");
+  openStyleSkillsBtn?.addEventListener("click", () => {
+    openStyleSkillsModal();
+  });
+  openStyleSkillsQuickBtn?.addEventListener("click", () => {
+    openStyleSkillsModal();
+  });
+  closeSettingsModalBtn?.addEventListener("click", () => {
+    closeSettingsModal();
+  });
+  closeStyleSkillsModalBtn?.addEventListener("click", () => {
+    closeStyleSkillsModal();
+  });
+  saveSystemPromptsBtn?.addEventListener("click", () => {
+    saveSystemPrompts();
+  });
+  resetSystemPromptsBtn?.addEventListener("click", () => {
+    resetSystemPrompts();
+  });
+  styleSkillSaveBtn?.addEventListener("click", () => {
+    saveStyleSkillFromModal();
+  });
+  styleSkillCancelBtn?.addEventListener("click", () => {
+    renderStyleSkillEditor();
+  });
+  styleSkillDeleteBtn?.addEventListener("click", () => {
+    deleteStyleSkillFromModal();
+  });
+  styleSkillsCardsEl?.addEventListener("click", (event) => {
+    const origin = event.target instanceof Element ? event.target : null;
+    if (!origin) return;
+    const button = origin.closest("button[data-style-skill-id]");
+    if (!button) return;
+    const styleSkillId = button.dataset.styleSkillId;
+    if (!styleSkillId) return;
+    startEditStyleSkill(styleSkillId);
   });
 
   acceptPendingEditBtn?.addEventListener("click", () => {
@@ -416,12 +490,45 @@ function bindEvents() {
   window.addEventListener("focus", () => {
     loadStyleSkills();
     renderStyleSkillSelect();
+    renderStyleSkillCards();
   });
 
   window.addEventListener("storage", (event) => {
     if (event.key === STYLE_SKILLS_KEY) {
       loadStyleSkills();
       renderStyleSkillSelect();
+      renderStyleSkillCards();
+    }
+    if (event.key === SYSTEM_PROMPTS_KEY) {
+      loadSystemPromptOverrides();
+      renderSystemPromptInputs();
+    }
+    if (event.key === THEME_MODE_KEY) {
+      loadThemeMode();
+      applyThemeMode();
+      renderThemeOptions();
+    }
+  });
+
+  window.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    if (target.dataset.closeModal === "settings") {
+      closeSettingsModal();
+    }
+    if (target.dataset.closeModal === "skills") {
+      closeStyleSkillsModal();
+    }
+  });
+
+  window.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    if (styleSkillsModal && !styleSkillsModal.classList.contains("hidden")) {
+      closeStyleSkillsModal();
+      return;
+    }
+    if (settingsModal && !settingsModal.classList.contains("hidden")) {
+      closeSettingsModal();
     }
   });
 }
@@ -584,6 +691,55 @@ function loadAutoTabState() {
   autoTabEnabled = raw === "1";
 }
 
+function loadThemeMode() {
+  const raw = localStorage.getItem(THEME_MODE_KEY);
+  themeMode = sanitizeThemeMode(raw);
+}
+
+function persistThemeMode() {
+  localStorage.setItem(THEME_MODE_KEY, themeMode);
+}
+
+function sanitizeThemeMode(value) {
+  return value === "light" || value === "beige" || value === "dark" ? value : "dark";
+}
+
+function applyThemeMode() {
+  document.body.dataset.theme = themeMode;
+}
+
+function renderThemeOptions() {
+  if (!themeOptionsEl) return;
+
+  const buttons = themeOptionsEl.querySelectorAll("button[data-theme-mode]");
+  buttons.forEach((button) => {
+    const mode = sanitizeThemeMode(button.getAttribute("data-theme-mode"));
+    const isActive = mode === themeMode;
+    button.classList.toggle("active", isActive);
+    button.setAttribute("aria-checked", isActive ? "true" : "false");
+  });
+}
+
+function getThemeLabel(mode) {
+  if (mode === "light") return "白色模式";
+  if (mode === "beige") return "米色模式";
+  return "黑色模式";
+}
+
+function setThemeMode(nextMode) {
+  const safeMode = sanitizeThemeMode(nextMode);
+  if (safeMode === themeMode) {
+    renderThemeOptions();
+    return;
+  }
+
+  themeMode = safeMode;
+  persistThemeMode();
+  applyThemeMode();
+  renderThemeOptions();
+  setStatus(`状态：已切换为${getThemeLabel(themeMode)}`);
+}
+
 function persistAutoTabState() {
   localStorage.setItem(AUTO_TAB_ENABLED_KEY, autoTabEnabled ? "1" : "0");
 }
@@ -643,8 +799,12 @@ function renderTabSettingsInputs() {
 }
 
 function renderTabSettingsPanel(isOpen) {
-  tabSettingsPanel.classList.toggle("hidden", !isOpen);
-  tabSettingsToggleBtn.textContent = isOpen ? "收起设置" : "Tab 设置";
+  if (tabSettingsPanel) {
+    tabSettingsPanel.classList.toggle("hidden", !isOpen);
+  }
+  if (tabSettingsToggleBtn) {
+    tabSettingsToggleBtn.textContent = "设置";
+  }
 }
 
 function loadStyleSkills() {
@@ -657,8 +817,11 @@ function loadStyleSkills() {
 
   try {
     const parsed = JSON.parse(raw);
-    styleSkills = ensureDefaultSkillsPresent(sanitizeStyleSkills(parsed));
-    persistStyleSkills();
+    styleSkills = sanitizeStyleSkills(parsed);
+    if (!styleSkills.length) {
+      styleSkills = cloneDefaultStyleSkills();
+      persistStyleSkills();
+    }
   } catch {
     styleSkills = cloneDefaultStyleSkills();
     persistStyleSkills();
@@ -682,15 +845,7 @@ function cloneDefaultStyleSkills() {
   return DEFAULT_STYLE_SKILLS.map((item) => ({ ...item }));
 }
 
-function ensureDefaultSkillsPresent(list) {
-  const output = Array.isArray(list) ? [...list] : [];
-  DEFAULT_STYLE_SKILLS.forEach((seed) => {
-    if (!output.some((item) => item.id === seed.id)) {
-      output.unshift({ ...seed });
-    }
-  });
-  return output.slice(0, 200);
-}
+
 
 function persistStyleSkills() {
   localStorage.setItem(STYLE_SKILLS_KEY, JSON.stringify(styleSkills));
@@ -715,6 +870,206 @@ function renderStyleSkillSelect() {
   if (currentValue && styleSkills.some((item) => item.id === currentValue)) {
     styleSkillSelect.value = currentValue;
   }
+}
+
+function loadSystemPromptOverrides() {
+  const raw = localStorage.getItem(SYSTEM_PROMPTS_KEY);
+  if (!raw) {
+    systemPromptOverrides = { tab: "", chapter: "", polish: "" };
+    return;
+  }
+
+  try {
+    const parsed = JSON.parse(raw);
+    systemPromptOverrides = {
+      tab: asText(parsed?.tab),
+      chapter: asText(parsed?.chapter),
+      polish: asText(parsed?.polish)
+    };
+  } catch {
+    systemPromptOverrides = { tab: "", chapter: "", polish: "" };
+  }
+}
+
+function persistSystemPromptOverrides() {
+  localStorage.setItem(SYSTEM_PROMPTS_KEY, JSON.stringify(systemPromptOverrides));
+}
+
+function getSystemPrompt(kind) {
+  if (kind === "tab") {
+    return systemPromptOverrides.tab.trim() || promptDefaults.tabSystemPrompt || "";
+  }
+  if (kind === "chapter") {
+    return systemPromptOverrides.chapter.trim() || promptDefaults.chapterSystemPrompt || "";
+  }
+  return systemPromptOverrides.polish.trim() || promptDefaults.polishSystemPrompt || "";
+}
+
+function renderSystemPromptInputs() {
+  if (!tabSystemPromptInput || !chapterSystemPromptInput || !polishSystemPromptInput) return;
+  tabSystemPromptInput.value = systemPromptOverrides.tab || promptDefaults.tabSystemPrompt || "";
+  chapterSystemPromptInput.value =
+    systemPromptOverrides.chapter || promptDefaults.chapterSystemPrompt || "";
+  polishSystemPromptInput.value =
+    systemPromptOverrides.polish || promptDefaults.polishSystemPrompt || "";
+}
+
+function saveSystemPrompts() {
+  if (!tabSystemPromptInput || !chapterSystemPromptInput || !polishSystemPromptInput) return;
+  systemPromptOverrides = {
+    tab: tabSystemPromptInput.value.trim(),
+    chapter: chapterSystemPromptInput.value.trim(),
+    polish: polishSystemPromptInput.value.trim()
+  };
+  persistSystemPromptOverrides();
+  renderSystemPromptInputs();
+  setStatus("状态：系统提示词已保存");
+}
+
+function resetSystemPrompts() {
+  systemPromptOverrides = { tab: "", chapter: "", polish: "" };
+  persistSystemPromptOverrides();
+  renderSystemPromptInputs();
+  setStatus("状态：系统提示词已恢复默认");
+}
+
+function openSettingsModal() {
+  if (!settingsModal) return;
+  renderThemeOptions();
+  settingsModal.classList.remove("hidden");
+  settingsModal.setAttribute("aria-hidden", "false");
+}
+
+function closeSettingsModal() {
+  if (!settingsModal) return;
+  settingsModal.classList.add("hidden");
+  settingsModal.setAttribute("aria-hidden", "true");
+}
+
+function openStyleSkillsModal() {
+  if (!styleSkillsModal) return;
+  renderStyleSkillCards();
+  renderStyleSkillEditor();
+  styleSkillsModal.classList.remove("hidden");
+  styleSkillsModal.setAttribute("aria-hidden", "false");
+}
+
+function closeStyleSkillsModal() {
+  if (!styleSkillsModal) return;
+  styleSkillsModal.classList.add("hidden");
+  styleSkillsModal.setAttribute("aria-hidden", "true");
+}
+
+function renderStyleSkillCards() {
+  if (!styleSkillsCardsEl) return;
+  styleSkillsCardsEl.innerHTML = "";
+
+  if (!styleSkills.length) {
+    const empty = document.createElement("div");
+    empty.className = "style-skill-empty";
+    empty.textContent = "当前没有风格卡片，先创建一张。";
+    styleSkillsCardsEl.appendChild(empty);
+    return;
+  }
+
+  styleSkills.forEach((item) => {
+    const card = document.createElement("article");
+    card.className = "style-skill-card";
+
+    const head = document.createElement("div");
+    head.className = "style-skill-card-head";
+
+    const title = document.createElement("strong");
+    title.textContent = item.name;
+    head.appendChild(title);
+
+    const editBtn = document.createElement("button");
+    editBtn.type = "button";
+    editBtn.className = "ghost";
+    editBtn.dataset.styleSkillId = item.id;
+    editBtn.textContent = "编辑";
+    head.appendChild(editBtn);
+
+    const content = document.createElement("pre");
+    content.textContent = item.prompt;
+
+    card.appendChild(head);
+    card.appendChild(content);
+    styleSkillsCardsEl.appendChild(card);
+  });
+}
+
+function renderStyleSkillEditor(skillId = "") {
+  editingStyleSkillId = skillId || "";
+
+  if (!styleSkillEditorTitleEl || !styleSkillNameInput || !styleSkillPromptInput) return;
+  if (!editingStyleSkillId) {
+    styleSkillEditorTitleEl.textContent = "新建风格卡片";
+    styleSkillNameInput.value = "";
+    styleSkillPromptInput.value = "";
+    styleSkillDeleteBtn?.classList.add("hidden");
+    return;
+  }
+
+  const target = styleSkills.find((item) => item.id === editingStyleSkillId);
+  if (!target) {
+    editingStyleSkillId = "";
+    renderStyleSkillEditor("");
+    return;
+  }
+
+  styleSkillEditorTitleEl.textContent = `编辑：${target.name}`;
+  styleSkillNameInput.value = target.name;
+  styleSkillPromptInput.value = target.prompt;
+  styleSkillDeleteBtn?.classList.remove("hidden");
+}
+
+function startEditStyleSkill(skillId) {
+  if (!skillId) return;
+  renderStyleSkillEditor(skillId);
+}
+
+function saveStyleSkillFromModal() {
+  if (!styleSkillNameInput || !styleSkillPromptInput) return;
+  const name = styleSkillNameInput.value.trim();
+  const prompt = styleSkillPromptInput.value.trim();
+  if (!name || !prompt) {
+    setStatus("状态：请填写卡片名称和风格提示词");
+    return;
+  }
+
+  if (editingStyleSkillId) {
+    styleSkills = styleSkills.map((item) =>
+      item.id === editingStyleSkillId ? { ...item, name, prompt } : item
+    );
+    setStatus("状态：风格卡片已更新");
+  } else {
+    styleSkills.unshift({
+      id: `style_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      name,
+      prompt
+    });
+    setStatus("状态：风格卡片已创建");
+  }
+
+  styleSkills = sanitizeStyleSkills(styleSkills);
+  persistStyleSkills();
+  renderStyleSkillSelect();
+  renderStyleSkillCards();
+  renderStyleSkillEditor("");
+}
+
+function deleteStyleSkillFromModal() {
+  if (!editingStyleSkillId) return;
+  styleSkills = styleSkills.filter((item) => item.id !== editingStyleSkillId);
+  if (!styleSkills.length) {
+    styleSkills = cloneDefaultStyleSkills();
+  }
+  persistStyleSkills();
+  renderStyleSkillSelect();
+  renderStyleSkillCards();
+  renderStyleSkillEditor("");
+  setStatus("状态：风格卡片已删除");
 }
 
 function loadApiConfigFromLocal() {
@@ -940,6 +1295,7 @@ async function requestCompletion(options = {}) {
         apiBaseUrl: apiBaseUrlInput.value.trim(),
         apiKey: apiKeyInput.value.trim(),
         model: modelInput.value.trim(),
+        systemPrompt: getSystemPrompt("tab"),
         maxTokens: tabSettings.maxTokens,
         novelTitle: project.title,
         chapterTitle: activeChapterTitle,
@@ -1030,6 +1386,7 @@ async function requestChapterContinuation() {
         apiBaseUrl: apiBaseUrlInput.value.trim(),
         apiKey: apiKeyInput.value.trim(),
         chapterModel: chapterModelInput.value.trim(),
+        systemPrompt: getSystemPrompt("chapter"),
         targetChars,
         novelTitle: project.title,
         chapterTitle: activeChapterTitle,
@@ -1130,6 +1487,7 @@ async function polishSelectedText() {
         apiBaseUrl: apiBaseUrlInput.value.trim(),
         apiKey: apiKeyInput.value.trim(),
         chapterModel: chapterModelInput.value.trim(),
+        systemPrompt: getSystemPrompt("polish"),
         novelTitle: project.title,
         chapterTitle: chapterTitleInput.value || chapter.title,
         chapterSetting: chapterSettingInput.value,
@@ -1436,12 +1794,7 @@ function prefillPolishPromptTrace(payload) {
 }
 
 function resolveSystemPrompt(kind) {
-  const value =
-    kind === "tab"
-      ? promptDefaults.tabSystemPrompt
-      : kind === "chapter"
-        ? promptDefaults.chapterSystemPrompt
-        : promptDefaults.polishSystemPrompt;
+  const value = getSystemPrompt(kind);
   return value || "（系统提示词由服务端配置，当前未下发）";
 }
 
@@ -2273,3 +2626,4 @@ function getCaretCoordinates(textarea, position) {
 
   return { left, top };
 }
+

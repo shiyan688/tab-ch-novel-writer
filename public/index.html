@@ -8,7 +8,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
       rel="stylesheet"
-      href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;700&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;700&display=swap"
     />
     <link rel="stylesheet" href="/style.css" />
   </head>
@@ -20,36 +20,14 @@
           <p>Tab 接受补全，Esc 取消，Ctrl + Space 手动触发</p>
         </div>
         <div class="top-right">
+          <div class="top-actions">
+            <button id="tabSettingsToggleBtn" type="button" class="ghost">设置</button>
+            <button id="openStyleSkillsQuickBtn" type="button" class="ghost">风格卡片</button>
+          </div>
           <span id="status">状态：准备中</span>
           <span id="autosaveInfo">自动保存：未开始</span>
         </div>
       </header>
-
-      <section class="panel api-panel">
-        <h2>API 配置</h2>
-        <div class="grid grid-4">
-          <label>
-            API Base URL
-            <input id="apiBaseUrl" type="text" placeholder="https://api.openai.com/v1" />
-          </label>
-          <label>
-            API Key（可留空，使用服务端 .env）
-            <input id="apiKey" type="password" placeholder="sk-..." />
-          </label>
-          <label>
-            Tab 补全模型
-            <input id="model" type="text" placeholder="gpt-4o-mini" />
-          </label>
-          <label>
-            整章续写模型
-            <input id="chapterModel" type="text" placeholder="gpt-4.1-mini" />
-          </label>
-        </div>
-        <div class="row-actions">
-          <button id="saveApiConfig" type="button">保存 API 配置</button>
-          <button id="clearApiConfig" type="button" class="ghost">清空 API Key</button>
-        </div>
-      </section>
 
       <section class="workspace">
         <aside class="panel sidebar">
@@ -118,7 +96,6 @@
             <span id="suggestionPreview"></span>
             <div class="hint-actions">
               <button id="autoTabToggleBtn" type="button" class="ghost">自动 Tab：关</button>
-              <button id="tabSettingsToggleBtn" type="button" class="ghost">Tab 设置</button>
               <label class="target-label">
                 整章续写字数
                 <input id="chapterTargetChars" type="number" min="300" max="5000" step="100" value="1200" />
@@ -155,32 +132,6 @@
             </div>
           </details>
 
-          <section id="tabSettingsPanel" class="tab-settings-panel hidden">
-            <h3>Tab 补全设置</h3>
-            <div class="grid grid-4">
-              <label>
-                max_tokens（48-64）
-                <input id="tabMaxTokensInput" type="number" min="48" max="64" step="1" />
-              </label>
-              <label>
-                输入停顿（毫秒）
-                <input id="tabInputPauseMsInput" type="number" min="300" max="3000" step="100" />
-              </label>
-              <label>
-                自动请求最小间隔（毫秒）
-                <input id="tabAutoMinIntervalMsInput" type="number" min="1000" max="30000" step="500" />
-              </label>
-              <label>
-                每分钟最多自动请求（次）
-                <input id="tabAutoMaxPerMinuteInput" type="number" min="1" max="30" step="1" />
-              </label>
-            </div>
-            <div class="row-actions">
-              <button id="saveTabSettingsBtn" type="button">保存 Tab 设置</button>
-              <button id="resetTabSettingsBtn" type="button" class="ghost">恢复默认</button>
-            </div>
-          </section>
-
           <section class="polish-panel">
             <h3>选中润色</h3>
             <div class="grid grid-3 polish-grid">
@@ -205,7 +156,171 @@
         </section>
       </section>
     </main>
+
+    <div id="settingsModal" class="modal hidden" aria-hidden="true">
+      <div class="modal-backdrop" data-close-modal="settings"></div>
+      <section class="modal-card settings-modal-card" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+        <header class="modal-head">
+          <h2 id="settingsTitle">设置</h2>
+          <button id="closeSettingsModalBtn" type="button" class="modal-close" aria-label="关闭设置">×</button>
+        </header>
+        <div class="modal-body settings-modal-body">
+          <section class="modal-block">
+            <h3>外观风格</h3>
+            <div id="themeOptions" class="theme-options" role="radiogroup" aria-label="网页外观风格">
+              <button
+                type="button"
+                class="theme-option"
+                data-theme-mode="dark"
+                role="radio"
+                aria-checked="false"
+              >
+                <span class="theme-option-swatch theme-swatch-dark" aria-hidden="true"></span>
+                <span class="theme-option-meta">
+                  <strong class="theme-option-label">黑色模式</strong>
+                  <span class="theme-option-desc">深色背景，适合长时间写作</span>
+                </span>
+              </button>
+              <button
+                type="button"
+                class="theme-option"
+                data-theme-mode="light"
+                role="radio"
+                aria-checked="false"
+              >
+                <span class="theme-option-swatch theme-swatch-light" aria-hidden="true"></span>
+                <span class="theme-option-meta">
+                  <strong class="theme-option-label">白色模式</strong>
+                  <span class="theme-option-desc">明亮简洁，接近文档阅读界面</span>
+                </span>
+              </button>
+              <button
+                type="button"
+                class="theme-option"
+                data-theme-mode="beige"
+                role="radio"
+                aria-checked="false"
+              >
+                <span class="theme-option-swatch theme-swatch-beige" aria-hidden="true"></span>
+                <span class="theme-option-meta">
+                  <strong class="theme-option-label">米色模式</strong>
+                  <span class="theme-option-desc">柔和纸感，减少纯白眩光</span>
+                </span>
+              </button>
+            </div>
+          </section>
+
+          <section class="modal-block">
+            <h3>API 与模型</h3>
+            <div class="grid grid-4">
+              <label>
+                API Base URL
+                <input id="apiBaseUrl" type="text" placeholder="https://api.openai.com/v1" />
+              </label>
+              <label>
+                API Key（可留空，使用服务端 .env）
+                <input id="apiKey" type="password" placeholder="sk-..." />
+              </label>
+              <label>
+                Tab 补全模型
+                <input id="model" type="text" placeholder="gpt-4o-mini" />
+              </label>
+              <label>
+                续写/润色模型
+                <input id="chapterModel" type="text" placeholder="gpt-4.1-mini" />
+              </label>
+            </div>
+            <div class="row-actions">
+              <button id="saveApiConfig" type="button">保存 API 配置</button>
+              <button id="clearApiConfig" type="button" class="ghost">清空 API Key</button>
+            </div>
+          </section>
+
+          <section class="modal-block">
+            <h3>系统提示词（可编辑）</h3>
+            <div class="grid">
+              <label>
+                Tab 补全系统提示词
+                <textarea id="tabSystemPromptInput" class="prompt-area" spellcheck="false"></textarea>
+              </label>
+              <label>
+                整章续写系统提示词
+                <textarea id="chapterSystemPromptInput" class="prompt-area" spellcheck="false"></textarea>
+              </label>
+              <label>
+                润色系统提示词
+                <textarea id="polishSystemPromptInput" class="prompt-area" spellcheck="false"></textarea>
+              </label>
+            </div>
+            <div class="row-actions">
+              <button id="saveSystemPromptsBtn" type="button">保存提示词</button>
+              <button id="resetSystemPromptsBtn" type="button" class="ghost">恢复默认提示词</button>
+            </div>
+          </section>
+
+          <section class="modal-block">
+            <h3>自动 Tab 参数</h3>
+            <div class="grid grid-4">
+              <label>
+                max_tokens（48-64）
+                <input id="tabMaxTokensInput" type="number" min="48" max="64" step="1" />
+              </label>
+              <label>
+                输入停顿（毫秒）
+                <input id="tabInputPauseMsInput" type="number" min="300" max="3000" step="100" />
+              </label>
+              <label>
+                自动请求最小间隔（毫秒）
+                <input id="tabAutoMinIntervalMsInput" type="number" min="1000" max="30000" step="500" />
+              </label>
+              <label>
+                每分钟最多自动请求（次）
+                <input id="tabAutoMaxPerMinuteInput" type="number" min="1" max="30" step="1" />
+              </label>
+            </div>
+            <div class="row-actions">
+              <button id="saveTabSettingsBtn" type="button">保存 Tab 设置</button>
+              <button id="resetTabSettingsBtn" type="button" class="ghost">恢复默认</button>
+            </div>
+          </section>
+        </div>
+      </section>
+    </div>
+
+    <div id="styleSkillsModal" class="modal hidden" aria-hidden="true">
+      <div class="modal-backdrop" data-close-modal="skills"></div>
+      <section class="modal-card skills-modal-card" role="dialog" aria-modal="true" aria-labelledby="styleSkillsTitle">
+        <header class="modal-head">
+          <h2 id="styleSkillsTitle">风格卡片</h2>
+          <button id="closeStyleSkillsModalBtn" type="button" class="modal-close" aria-label="关闭风格卡片">×</button>
+        </header>
+        <div class="modal-body skills-modal-body">
+          <section class="modal-block">
+            <h3 id="styleSkillEditorTitle">新建风格卡片</h3>
+            <div class="grid">
+              <label>
+                卡片名称
+                <input id="styleSkillNameInput" type="text" placeholder="例如：高压追逃·短句推进" />
+              </label>
+              <label>
+                风格提示词
+                <textarea id="styleSkillPromptInput" class="prompt-area" spellcheck="false" placeholder="填写该风格的写作要求..." ></textarea>
+              </label>
+            </div>
+            <div class="row-actions">
+              <button id="styleSkillSaveBtn" type="button">保存卡片</button>
+              <button id="styleSkillCancelBtn" type="button" class="ghost">清空编辑</button>
+              <button id="styleSkillDeleteBtn" type="button" class="ghost danger hidden">删除卡片</button>
+            </div>
+          </section>
+          <section class="modal-block">
+            <h3>现有卡片</h3>
+            <div id="styleSkillsCards" class="skills-cards"></div>
+          </section>
+        </div>
+      </section>
+    </div>
+
     <script type="module" src="/app.js"></script>
   </body>
 </html>
-
