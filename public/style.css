@@ -1,4 +1,4 @@
-:root {
+﻿:root {
   --bg: #070a11;
   --bg-2: #0a0f18;
   --bg-3: #0e1622;
@@ -705,6 +705,16 @@ button:disabled {
   margin-top: 8px;
   display: grid;
   gap: 8px;
+  grid-template-columns: minmax(0, 1.12fr) minmax(280px, 0.88fr);
+}
+
+.api-trace-grid > label:last-child {
+  grid-column: 1 / -1;
+}
+
+.trace-metrics-pre {
+  min-height: 132px;
+  max-height: 220px;
 }
 
 .trace-pre {
@@ -1017,7 +1027,8 @@ button:disabled {
   .grid-3,
   .grid-2,
   .polish-grid,
-  .theme-options {
+  .theme-options,
+  .api-trace-grid {
     grid-template-columns: 1fr;
   }
 
@@ -1067,3 +1078,5 @@ button:disabled {
     font-size: 17px;
   }
 }
+
+

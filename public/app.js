@@ -68,6 +68,7 @@ const suggestionPreviewEl = document.getElementById("suggestionPreview");
 const folderInfoEl = document.getElementById("folderInfo");
 const apiTracePanel = document.getElementById("apiTracePanel");
 const apiPromptTraceEl = document.getElementById("apiPromptTrace");
+const apiMetricsTraceEl = document.getElementById("apiMetricsTrace");
 const apiStreamTraceEl = document.getElementById("apiStreamTrace");
 const pendingEditPanel = document.getElementById("pendingEditPanel");
 const pendingEditTypeEl = document.getElementById("pendingEditType");
@@ -135,6 +136,7 @@ let autoStatusCooldownUntil = 0;
 let lastAutoStatusKey = "";
 let systemPromptOverrides = { tab: "", chapter: "", polish: "" };
 let editingStyleSkillId = "";
+let apiMetricsState = {};
 let themeMode = "dark";
 let promptDefaults = {
   tabSystemPrompt: "",
@@ -1266,14 +1268,19 @@ async function requestCompletion(options = {}) {
   }
 
   inFlightAbortController = new AbortController();
-  prefillTabPromptTrace({
+  const tabTrace = prefillTabPromptTrace({
     context,
     chapterContent: chapter.content,
     cursor,
     chapterTitle: activeChapterTitle,
     chapterSetting: activeChapterSetting
   });
-  setApiStreamTrace("（提示词已更新，准备发送请求）");
+  const clientTimingContext = createClientTimingContext("Tab 补全");
+  mergeApiMetricsTrace({
+    requestKind: tabTrace.requestKind || clientTimingContext.requestKind,
+    requestPhase: "请求已发送",
+    clientStartedAt: clientTimingContext.startedAtIso
+  });
   if (isAuto) {
     setStatus("状态：自动 Tab 已触发，提示词已更新，正在发送 API 请求...");
   } else {
@@ -1304,6 +1311,11 @@ async function requestCompletion(options = {}) {
       })
     });
 
+    mergeApiMetricsTrace({
+      clientHeadersLatencyMs: elapsedMs(clientTimingContext.startedAtMs),
+      requestPhase: "已收到代理响应头"
+    });
+
     if (!response.ok) {
       const payload = await response.json();
       throw new Error(payload.error || "补全请求失败");
@@ -1313,7 +1325,7 @@ async function requestCompletion(options = {}) {
       throw new Error("流式响应为空");
     }
 
-    const streamResult = await readCompletionStream(response.body);
+    const streamResult = await readCompletionStream(response.body, clientTimingContext);
     const normalized = normalizeSuggestion(streamResult.suggestion, context);
     if (!normalized) {
       clearSuggestion();
@@ -1326,12 +1338,20 @@ async function requestCompletion(options = {}) {
     setStatus("状态：建议已生成，按 Tab 接受");
   } catch (err) {
     if (err.name === "AbortError") {
+      mergeApiMetricsTrace({
+        clientTotalMs: elapsedMs(clientTimingContext.startedAtMs),
+        requestPhase: "请求已取消"
+      });
       if (isAuto) {
         setAutoStatus("状态：自动 Tab 请求已取消", "auto_abort");
       }
       return;
     }
     clearSuggestion();
+    mergeApiMetricsTrace({
+      clientTotalMs: elapsedMs(clientTimingContext.startedAtMs),
+      requestPhase: "请求失败"
+    });
     setStatus(`状态：请求失败 - ${err.message}`);
   } finally {
     inFlightAbortController = null;
@@ -1365,14 +1385,19 @@ async function requestChapterContinuation() {
   chapterAbortController = new AbortController();
   setContinueChapterBusy(true);
   setStatus("状态：正在续写完整章节...");
-  prefillChapterPromptTrace({
+  const chapterTrace = prefillChapterPromptTrace({
     context,
     targetChars,
     chapterTitle: activeChapterTitle,
     chapterSetting: activeChapterSetting,
     characterSetting: activeCharacterSetting
   });
-  setApiStreamTrace("（提示词已更新，准备发送请求）");
+  const clientTimingContext = createClientTimingContext("整章续写");
+  mergeApiMetricsTrace({
+    requestKind: chapterTrace.requestKind || clientTimingContext.requestKind,
+    requestPhase: "请求已发送",
+    clientStartedAt: clientTimingContext.startedAtIso
+  });
   setStatus("状态：提示词已更新，正在发送续写请求...");
   setApiStreamTrace("（请求已发送，等待返回）");
 
@@ -1396,6 +1421,11 @@ async function requestChapterContinuation() {
       })
     });
 
+    mergeApiMetricsTrace({
+      clientHeadersLatencyMs: elapsedMs(clientTimingContext.startedAtMs),
+      requestPhase: "已收到响应"
+    });
+
     const payload = await response.json();
     if (!response.ok) {
       throw new Error(payload.error || "整章续写失败");
@@ -1407,7 +1437,13 @@ async function requestChapterContinuation() {
       return;
     }
 
-    applyDebugTraceToPanel(payload.trace, longText);
+    applyDebugTraceToPanel(payload.trace, longText, {
+      requestKind: clientTimingContext.requestKind,
+      clientStartedAt: clientTimingContext.startedAtIso,
+      clientHeadersLatencyMs: elapsedMs(clientTimingContext.startedAtMs),
+      clientTotalMs: elapsedMs(clientTimingContext.startedAtMs),
+      requestPhase: "已完成"
+    });
     const insertText = formatChapterInsertion(beforeCursor, longText);
     showPendingEdit({
       typeLabel: "续写建议",
@@ -1425,9 +1461,17 @@ async function requestChapterContinuation() {
     setStatus("状态：续写建议已生成，请选择接受或拒绝");
   } catch (err) {
     if (err.name === "AbortError") {
+      mergeApiMetricsTrace({
+        clientTotalMs: elapsedMs(clientTimingContext.startedAtMs),
+        requestPhase: "请求已取消"
+      });
       setStatus("状态：已取消整章续写");
       return;
     }
+    mergeApiMetricsTrace({
+      clientTotalMs: elapsedMs(clientTimingContext.startedAtMs),
+      requestPhase: "请求失败"
+    });
     setStatus(`状态：整章续写失败 - ${err.message}`);
   } finally {
     chapterAbortController = null;
@@ -1464,7 +1508,7 @@ async function polishSelectedText() {
 
   setPolishSelectionBusy(true);
   setStatus("状态：正在润色选中文本...");
-  prefillPolishPromptTrace({
+  const polishTrace = prefillPolishPromptTrace({
     selectedText,
     styleRequirement,
     styleSkillPrompt,
@@ -1472,7 +1516,12 @@ async function polishSelectedText() {
     chapterSetting: chapterSettingInput.value,
     characterSetting: characterSettingInput.value
   });
-  setApiStreamTrace("（提示词已更新，准备发送请求）");
+  const clientTimingContext = createClientTimingContext("选中润色");
+  mergeApiMetricsTrace({
+    requestKind: polishTrace.requestKind || clientTimingContext.requestKind,
+    requestPhase: "请求已发送",
+    clientStartedAt: clientTimingContext.startedAtIso
+  });
   setStatus("状态：提示词已更新，正在发送润色请求...");
   setApiStreamTrace("（请求已发送，等待返回）");
 
@@ -1496,6 +1545,11 @@ async function polishSelectedText() {
       })
     });
 
+    mergeApiMetricsTrace({
+      clientHeadersLatencyMs: elapsedMs(clientTimingContext.startedAtMs),
+      requestPhase: "已收到响应"
+    });
+
     const payload = await response.json();
     if (!response.ok) {
       throw new Error(payload.error || "润色请求失败");
@@ -1507,7 +1561,13 @@ async function polishSelectedText() {
       return;
     }
 
-    applyDebugTraceToPanel(payload.trace, polishedText);
+    applyDebugTraceToPanel(payload.trace, polishedText, {
+      requestKind: clientTimingContext.requestKind,
+      clientStartedAt: clientTimingContext.startedAtIso,
+      clientHeadersLatencyMs: elapsedMs(clientTimingContext.startedAtMs),
+      clientTotalMs: elapsedMs(clientTimingContext.startedAtMs),
+      requestPhase: "已完成"
+    });
     showPendingEdit({
       typeLabel: "润色建议",
       hint: `将替换选中的 ${selectedText.length} 字`,
@@ -1523,6 +1583,10 @@ async function polishSelectedText() {
     clearSuggestion();
     setStatus("状态：润色建议已生成，请选择接受或拒绝");
   } catch (err) {
+    mergeApiMetricsTrace({
+      clientTotalMs: elapsedMs(clientTimingContext.startedAtMs),
+      requestPhase: "请求失败"
+    });
     setStatus(`状态：润色失败 - ${err.message}`);
   } finally {
     setPolishSelectionBusy(false);
@@ -1732,13 +1796,16 @@ function renderSuggestion() {
 }
 
 function resetApiTrace() {
+  apiMetricsState = {};
   if (apiPromptTraceEl) apiPromptTraceEl.textContent = "";
+  if (apiMetricsTraceEl) apiMetricsTraceEl.textContent = "";
   if (apiStreamTraceEl) apiStreamTraceEl.textContent = "";
 }
 
 function prefillTabPromptTrace(payload) {
   const paragraphMemory = collectParagraphMemory(payload.chapterContent || "", payload.cursor || 0);
-  const trace = {
+  const trace = buildApiTraceMeta({
+    requestKind: "Tab 补全",
     model: modelInput.value.trim() || "",
     temperature: promptDefaults.tabTemperature,
     maxTokens: tabSettings.maxTokens,
@@ -1750,14 +1817,22 @@ function prefillTabPromptTrace(payload) {
       chapterSetting: payload.chapterSetting,
       paragraphMemory
     })
-  };
+  });
+  resetApiTrace();
   setApiPromptTrace(trace);
+  setApiMetricsTrace({
+    requestKind: trace.requestKind,
+    requestPhase: "提示词已就绪",
+    ...trace.metrics
+  });
+  return trace;
 }
 
 function prefillChapterPromptTrace(payload) {
   const targetChars = clampInt(payload.targetChars, 300, 5000, 1200);
   const inferredMaxTokens = estimateChapterMaxTokensForTrace(targetChars);
-  const trace = {
+  const trace = buildApiTraceMeta({
+    requestKind: "整章续写",
     model: chapterModelInput.value.trim() || "",
     temperature: promptDefaults.chapterTemperature,
     maxTokens: inferredMaxTokens,
@@ -1770,12 +1845,20 @@ function prefillChapterPromptTrace(payload) {
       characterSetting: payload.characterSetting,
       targetChars
     })
-  };
+  });
+  resetApiTrace();
   setApiPromptTrace(trace);
+  setApiMetricsTrace({
+    requestKind: trace.requestKind,
+    requestPhase: "提示词已就绪",
+    ...trace.metrics
+  });
+  return trace;
 }
 
 function prefillPolishPromptTrace(payload) {
-  const trace = {
+  const trace = buildApiTraceMeta({
+    requestKind: "选中润色",
     model: chapterModelInput.value.trim() || "",
     temperature: promptDefaults.chapterTemperature,
     maxTokens: estimatePolishMaxTokensForTrace(payload.selectedText),
@@ -1789,8 +1872,38 @@ function prefillPolishPromptTrace(payload) {
       chapterSetting: payload.chapterSetting,
       characterSetting: payload.characterSetting
     })
-  };
+  });
+  resetApiTrace();
   setApiPromptTrace(trace);
+  setApiMetricsTrace({
+    requestKind: trace.requestKind,
+    requestPhase: "提示词已就绪",
+    ...trace.metrics
+  });
+  return trace;
+}
+
+function buildApiTraceMeta(payload) {
+  const metrics = buildPromptTokenMetrics(payload.systemPrompt, payload.userPrompt);
+  return {
+    requestKind: payload.requestKind,
+    model: payload.model || "",
+    temperature: payload.temperature,
+    maxTokens: payload.maxTokens,
+    systemPrompt: payload.systemPrompt || "",
+    userPrompt: payload.userPrompt || "",
+    metrics
+  };
+}
+
+function buildPromptTokenMetrics(systemPrompt, userPrompt) {
+  const systemPromptTokensEstimated = estimateTraceTextTokens(systemPrompt);
+  const userPromptTokensEstimated = estimateTraceTextTokens(userPrompt);
+  return {
+    systemPromptTokensEstimated,
+    userPromptTokensEstimated,
+    promptTokensEstimated: systemPromptTokensEstimated + userPromptTokensEstimated + 6
+  };
 }
 
 function resolveSystemPrompt(kind) {
@@ -1899,31 +2012,181 @@ function estimatePolishMaxTokensForTrace(selectedText) {
   return clampInt(estimated, 120, 2200, 600);
 }
 
+function estimateTraceTextTokens(text) {
+  const source = String(text || "").replace(/\r/g, "");
+  if (!source.trim()) return 0;
+
+  let tokens = 0;
+  let asciiBufferLength = 0;
+
+  const flushAscii = () => {
+    if (!asciiBufferLength) return;
+    tokens += Math.ceil(asciiBufferLength / 4);
+    asciiBufferLength = 0;
+  };
+
+  for (const ch of source) {
+    if (/\s/.test(ch)) {
+      flushAscii();
+      continue;
+    }
+
+    if (isTraceCjkChar(ch)) {
+      flushAscii();
+      tokens += 1.3;
+      continue;
+    }
+
+    if (/[A-Za-z0-9]/.test(ch)) {
+      asciiBufferLength += 1;
+      continue;
+    }
+
+    flushAscii();
+    tokens += 0.6;
+  }
+
+  flushAscii();
+  return Math.max(1, Math.round(tokens));
+}
+
+function isTraceCjkChar(ch) {
+  const code = ch.codePointAt(0) || 0;
+  return (
+    (code >= 0x3400 && code <= 0x4dbf) ||
+    (code >= 0x4e00 && code <= 0x9fff) ||
+    (code >= 0xf900 && code <= 0xfaff)
+  );
+}
+
+function createClientTimingContext(requestKind) {
+  return {
+    requestKind,
+    startedAtMs: performance.now(),
+    startedAtIso: new Date().toISOString()
+  };
+}
+
+function elapsedMs(startedAtMs) {
+  return Math.max(0, Math.round(performance.now() - startedAtMs));
+}
+
 function setApiStreamTrace(text) {
   if (!apiStreamTraceEl) return;
   apiStreamTraceEl.textContent = String(text || "");
 }
 
+function setApiMetricsTrace(metrics) {
+  apiMetricsState = metrics && typeof metrics === "object" ? { ...metrics } : {};
+  renderApiMetricsTrace();
+}
+
+function mergeApiMetricsTrace(patch) {
+  if (!patch || typeof patch !== "object") return;
+  apiMetricsState = {
+    ...apiMetricsState,
+    ...patch
+  };
+  renderApiMetricsTrace();
+}
+
+function renderApiMetricsTrace() {
+  if (!apiMetricsTraceEl) return;
+
+  const metrics = apiMetricsState || {};
+  const lines = [];
+  appendMetricLine(lines, "请求类型", metrics.requestKind);
+  appendMetricLine(lines, "阶段", metrics.requestPhase);
+  appendMetricLine(lines, "客户端发起时间", metrics.clientStartedAt);
+  appendMetricLine(lines, "API 发起时间", metrics.apiRequestStartedAt);
+  appendMetricLine(lines, "客户端首包延迟", formatMetricMs(metrics.clientHeadersLatencyMs));
+  appendMetricLine(lines, "客户端首个流事件延迟", formatMetricMs(metrics.clientFirstEventLatencyMs));
+  appendMetricLine(lines, "客户端首个 reasoning 延迟", formatMetricMs(metrics.clientFirstReasoningLatencyMs));
+  appendMetricLine(lines, "客户端首个可见正文延迟", formatMetricMs(metrics.clientFirstVisibleTokenLatencyMs ?? metrics.clientFirstTokenLatencyMs));
+  appendMetricLine(lines, "客户端总耗时", formatMetricMs(metrics.clientTotalMs));
+  appendMetricLine(lines, "API 首包延迟", formatMetricMs(metrics.upstreamHeadersLatencyMs));
+  appendMetricLine(lines, "API 首个流事件延迟", formatMetricMs(metrics.upstreamFirstEventLatencyMs));
+  appendMetricLine(lines, "API 首个 reasoning 延迟", formatMetricMs(metrics.upstreamFirstReasoningLatencyMs));
+  appendMetricLine(lines, "API 首个可见正文延迟", formatMetricMs(metrics.upstreamFirstTokenLatencyMs));
+  appendMetricLine(lines, "API 总耗时", formatMetricMs(metrics.upstreamTotalMs));
+  appendMetricLine(lines, "提示词 tokens（估算）", formatMetricInteger(metrics.promptTokensEstimated));
+  appendMetricLine(lines, "System tokens（估算）", formatMetricInteger(metrics.systemPromptTokensEstimated));
+  appendMetricLine(lines, "User tokens（估算）", formatMetricInteger(metrics.userPromptTokensEstimated));
+  appendMetricLine(lines, "提示词 tokens（API）", formatMetricInteger(metrics.promptTokensActual));
+  appendMetricLine(lines, "输出 tokens（估算）", formatMetricInteger(metrics.completionTokensEstimated));
+  appendMetricLine(lines, "输出 tokens（API）", formatMetricInteger(metrics.completionTokensActual));
+  appendMetricLine(lines, "总 tokens（API）", formatMetricInteger(metrics.totalTokensActual));
+  appendMetricLine(lines, "输出字符数", formatMetricInteger(metrics.outputChars));
+  appendMetricLine(lines, "流式块数", formatMetricInteger(metrics.streamChunkCount));
+  appendMetricLine(lines, "输出速率", formatMetricRate(metrics.outputTokensPerSecond));
+  appendMetricLine(lines, "用量来源", formatUsageSource(metrics.usageSource));
+
+  apiMetricsTraceEl.textContent = lines.length ? lines.join("\n") : "暂无调用指标";
+  if (apiTracePanel) {
+    apiTracePanel.open = true;
+  }
+}
+
+function appendMetricLine(lines, label, value) {
+  if (value === "" || value === null || value === undefined) return;
+  lines.push(`${label}：${value}`);
+}
+
+function formatMetricMs(value) {
+  return Number.isFinite(value) ? `${Math.round(value)} ms` : "";
+}
+
+function formatMetricInteger(value) {
+  return Number.isFinite(value) ? String(Math.round(value)) : "";
+}
+
+function formatMetricRate(value) {
+  return Number.isFinite(value) ? `${value.toFixed(2)} tokens/s` : "";
+}
+
+function formatUsageSource(value) {
+  if (value === "provider") return "API 实际返回";
+  if (value === "estimated") return "本地估算";
+  if (value === "provider_with_estimated_fallback") return "API + 本地补全估算";
+  return "";
+}
+
+function formatThinkingMode(value) {
+  if (value === "disabled") return "disabled";
+  if (value === "provider_default") return "provider_default";
+  return "";
+}
+
 function setApiPromptTrace(meta) {
   if (!apiPromptTraceEl) return;
 
+  const metrics = meta?.metrics && typeof meta.metrics === "object" ? meta.metrics : {};
   const parts = [
     `model: ${meta.model || ""}`,
     `temperature: ${meta.temperature ?? ""}`,
     `max_tokens: ${meta.maxTokens ?? ""}`,
+    `thinking: ${formatThinkingMode(meta.thinkingMode)}`,
+    metrics.promptTokensEstimated != null
+      ? `estimated_prompt_tokens: ${metrics.promptTokensEstimated}`
+      : "",
+    metrics.systemPromptTokensEstimated != null
+      ? `estimated_system_tokens: ${metrics.systemPromptTokensEstimated}`
+      : "",
+    metrics.userPromptTokensEstimated != null
+      ? `estimated_user_tokens: ${metrics.userPromptTokensEstimated}`
+      : "",
     "",
     "[System Prompt]",
     meta.systemPrompt || "",
     "",
     "[User Prompt]",
     meta.userPrompt || ""
-  ];
+  ].filter((item) => item !== "");
   apiPromptTraceEl.textContent = parts.join("\n");
   if (apiTracePanel) {
     apiTracePanel.open = true;
   }
 }
-
 function appendApiStreamTrace(text) {
   if (!apiStreamTraceEl || !text) return;
   apiStreamTraceEl.textContent += text;
@@ -1933,19 +2196,55 @@ function appendApiStreamTrace(text) {
   }
 }
 
-function applyDebugTraceToPanel(trace, outputText) {
+function applyDebugTraceToPanel(trace, outputText, extraMetrics = {}) {
   if (trace && typeof trace === "object") {
     setApiPromptTrace(trace);
+    if (trace.metrics && typeof trace.metrics === "object") {
+      mergeApiMetricsTrace(trace.metrics);
+    }
+  }
+  if (extraMetrics && typeof extraMetrics === "object") {
+    mergeApiMetricsTrace(extraMetrics);
   }
   setApiStreamTrace(outputText || "");
 }
 
-async function readCompletionStream(bodyStream) {
+async function readCompletionStream(bodyStream, clientTimingContext) {
   const reader = bodyStream.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
   let streamText = "";
   let doneSuggestion = "";
+  let firstEventSeen = false;
+  let firstReasoningSeen = false;
+  let firstDeltaSeen = false;
+
+  const markClientFirstEvent = () => {
+    if (!clientTimingContext || firstEventSeen) return;
+    firstEventSeen = true;
+    mergeApiMetricsTrace({
+      clientFirstEventLatencyMs: elapsedMs(clientTimingContext.startedAtMs)
+    });
+  };
+
+  const markClientFirstReasoning = () => {
+    if (!clientTimingContext || firstReasoningSeen) return;
+    firstReasoningSeen = true;
+    mergeApiMetricsTrace({
+      clientFirstReasoningLatencyMs: elapsedMs(clientTimingContext.startedAtMs)
+    });
+  };
+
+  const markClientFirstVisible = () => {
+    if (!clientTimingContext || firstDeltaSeen) return;
+    firstDeltaSeen = true;
+    const latency = elapsedMs(clientTimingContext.startedAtMs);
+    mergeApiMetricsTrace({
+      clientFirstVisibleTokenLatencyMs: latency,
+      clientFirstTokenLatencyMs: latency,
+      requestPhase: "流式输出中"
+    });
+  };
 
   while (true) {
     const { value, done } = await reader.read();
@@ -1964,11 +2263,28 @@ async function readCompletionStream(bodyStream) {
 
       if (event.type === "meta") {
         setApiPromptTrace(event);
+        mergeApiMetricsTrace(event.metrics || {});
+        continue;
+      }
+
+      if (event.type === "metrics") {
+        const eventMetrics = event.metrics || {};
+        if (eventMetrics.upstreamFirstEventLatencyMs != null) {
+          markClientFirstEvent();
+        }
+        if (eventMetrics.upstreamFirstReasoningLatencyMs != null) {
+          markClientFirstReasoning();
+        }
+        mergeApiMetricsTrace(eventMetrics);
         continue;
       }
 
       if (event.type === "delta") {
         const text = String(event.text || "");
+        if (text) {
+          markClientFirstEvent();
+          markClientFirstVisible();
+        }
         streamText += text;
         appendApiStreamTrace(text);
         continue;
@@ -1976,7 +2292,12 @@ async function readCompletionStream(bodyStream) {
 
       if (event.type === "done") {
         doneSuggestion = String(event.suggestion || "");
+        if (event.metrics && typeof event.metrics === "object") {
+          mergeApiMetricsTrace(event.metrics);
+        }
         if (!streamText && doneSuggestion) {
+          markClientFirstEvent();
+          markClientFirstVisible();
           appendApiStreamTrace(doneSuggestion);
         }
         continue;
@@ -1991,13 +2312,38 @@ async function readCompletionStream(bodyStream) {
   const tailEvent = safeParseJson(buffer.trim());
   if (tailEvent?.type === "done") {
     doneSuggestion = String(tailEvent.suggestion || doneSuggestion);
+    if (tailEvent.metrics && typeof tailEvent.metrics === "object") {
+      mergeApiMetricsTrace(tailEvent.metrics);
+    }
     if (!streamText && doneSuggestion) {
+      markClientFirstEvent();
+      markClientFirstVisible();
       appendApiStreamTrace(doneSuggestion);
     }
   } else if (tailEvent?.type === "delta") {
     const text = String(tailEvent.text || "");
+    if (text) {
+      markClientFirstEvent();
+      markClientFirstVisible();
+    }
     streamText += text;
     appendApiStreamTrace(text);
+  } else if (tailEvent?.type === "metrics") {
+    const eventMetrics = tailEvent.metrics || {};
+    if (eventMetrics.upstreamFirstEventLatencyMs != null) {
+      markClientFirstEvent();
+    }
+    if (eventMetrics.upstreamFirstReasoningLatencyMs != null) {
+      markClientFirstReasoning();
+    }
+    mergeApiMetricsTrace(eventMetrics);
+  }
+
+  if (clientTimingContext) {
+    mergeApiMetricsTrace({
+      clientTotalMs: elapsedMs(clientTimingContext.startedAtMs),
+      requestPhase: "已完成"
+    });
   }
 
   return { suggestion: doneSuggestion || streamText };
@@ -2626,4 +2972,6 @@ function getCaretCoordinates(textarea, position) {
 
   return { left, top };
 }
+
+
 

@@ -192,6 +192,9 @@ app.post("/api/complete", async (req, res) => {
     characterSetting,
     paragraphMemory
   });
+  const promptTokenStats = estimatePromptTokenStats(finalSystemPrompt, userMessage);
+  const requestStartedAtMs = performance.now();
+  const requestStartedAtIso = new Date().toISOString();
 
   try {
     const upstreamBody = {
@@ -204,30 +207,27 @@ app.post("/api/complete", async (req, res) => {
       ]
     };
 
+    if (shouldDisableThinkingForTab(finalApiBaseUrl, finalModel)) {
+      upstreamBody.enable_thinking = false;
+    }
+
     if (wantsStream) {
-      const upstream = await fetch(completionUrl, {
-        method: "POST",
-        headers: {
+      const streamAttempt = await postStreamCompletionWithUsageFallback(
+        completionUrl,
+        {
           "Content-Type": "application/json",
           Authorization: `Bearer ${finalApiKey}`
         },
-        body: JSON.stringify({
-          ...upstreamBody,
-          stream: true
-        })
-      });
+        upstreamBody
+      );
 
-      if (!upstream.ok) {
-        const text = await upstream.text();
-        const data = tryParseJson(text);
-        const detail =
-          data?.error?.message ||
-          data?.message ||
-          text ||
-          `Upstream error (${upstream.status})`;
-        res.status(upstream.status).json({ error: detail });
+      if (streamAttempt.errorDetail) {
+        res.status(streamAttempt.errorStatus).json({ error: streamAttempt.errorDetail });
         return;
       }
+
+      const upstream = streamAttempt.upstream;
+      const headersLatencyMs = roundMetric(performance.now() - requestStartedAtMs);
 
       if (!upstream.body) {
         res.status(502).json({ error: "Upstream stream body is empty" });
@@ -238,20 +238,35 @@ app.post("/api/complete", async (req, res) => {
       res.setHeader("Cache-Control", "no-cache");
       res.setHeader("Connection", "keep-alive");
 
-      writeNdjson(res, {
-        type: "meta",
-        model: finalModel,
-        temperature: finalTemperature,
-        maxTokens: finalMaxTokens,
-        systemPrompt: finalSystemPrompt,
-        userPrompt: userMessage
-      });
+      writeNdjson(
+        res,
+        buildTracePayload({
+          type: "meta",
+          requestKind: "Tab 补全",
+          model: finalModel,
+          temperature: finalTemperature,
+          maxTokens: finalMaxTokens,
+          thinkingMode: upstreamBody.enable_thinking === false ? "disabled" : "provider_default",
+          systemPrompt: finalSystemPrompt,
+          userPrompt: userMessage,
+          metrics: {
+            requestKind: "Tab 补全",
+            apiRequestStartedAt: requestStartedAtIso,
+            upstreamHeadersLatencyMs: headersLatencyMs,
+            ...promptTokenStats
+          }
+        })
+      );
 
       const reader = upstream.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
       let streamText = "";
-      let sentDone = false;
+      let firstEventLatencyMs = null;
+      let firstReasoningLatencyMs = null;
+      let firstTokenLatencyMs = null;
+      let streamChunkCount = 0;
+      let latestUsage = null;
 
       while (true) {
         const { value, done } = await reader.read();
@@ -270,35 +285,78 @@ app.post("/api/complete", async (req, res) => {
             : line.startsWith("{")
               ? line
               : "";
-          if (!dataText) continue;
-
-          if (dataText === "[DONE]") {
-            if (!sentDone) {
-              sentDone = true;
-              writeNdjson(res, {
-                type: "done",
-                suggestion: normalizeSuggestion(streamText)
-              });
-            }
-            continue;
-          }
+          if (!dataText || dataText === "[DONE]") continue;
 
           const data = tryParseJson(dataText);
+          if (!data) continue;
+
+          if (firstEventLatencyMs === null) {
+            firstEventLatencyMs = roundMetric(performance.now() - requestStartedAtMs);
+            writeNdjson(res, {
+              type: "metrics",
+              metrics: {
+                requestKind: "Tab 补全",
+                upstreamFirstEventLatencyMs: firstEventLatencyMs
+              }
+            });
+          }
+
+          const usage = extractUsage(data);
+          if (usage) {
+            latestUsage = usage;
+          }
+
+          const reasoningDelta = extractStreamReasoningDelta(data);
+          if (reasoningDelta && firstReasoningLatencyMs === null) {
+            firstReasoningLatencyMs = roundMetric(performance.now() - requestStartedAtMs);
+            writeNdjson(res, {
+              type: "metrics",
+              metrics: {
+                requestKind: "Tab 补全",
+                upstreamFirstReasoningLatencyMs: firstReasoningLatencyMs
+              }
+            });
+          }
+
           const delta = extractStreamTextDelta(data);
           if (!delta) continue;
 
+          if (firstTokenLatencyMs === null) {
+            firstTokenLatencyMs = roundMetric(performance.now() - requestStartedAtMs);
+            writeNdjson(res, {
+              type: "metrics",
+              metrics: {
+                requestKind: "Tab 补全",
+                upstreamFirstTokenLatencyMs: firstTokenLatencyMs
+              }
+            });
+          }
+
           streamText += delta;
+          streamChunkCount += 1;
           writeNdjson(res, { type: "delta", text: delta });
         }
       }
 
-      if (!sentDone) {
-        writeNdjson(res, {
-          type: "done",
-          suggestion: normalizeSuggestion(streamText)
-        });
-      }
+      const finalMetrics = buildTraceMetrics({
+        requestKind: "Tab 补全",
+        requestStartedAtIso,
+        promptTokenStats,
+        headersLatencyMs,
+        firstEventLatencyMs,
+        firstReasoningLatencyMs,
+        firstTokenLatencyMs,
+        totalMs: roundMetric(performance.now() - requestStartedAtMs),
+        outputText: streamText,
+        streamChunkCount,
+        usage: latestUsage
+      });
 
+      writeNdjson(res, {
+        type: "done",
+        suggestion: normalizeSuggestion(streamText),
+        metrics: finalMetrics
+      });
       res.end();
       return;
     }
@@ -312,15 +370,13 @@ app.post("/api/complete", async (req, res) => {
       body: JSON.stringify(upstreamBody)
     });
 
+    const headersLatencyMs = roundMetric(performance.now() - requestStartedAtMs);
     const text = await upstream.text();
+    const totalMs = roundMetric(performance.now() - requestStartedAtMs);
     const data = tryParseJson(text);
 
     if (!upstream.ok) {
-      const detail =
-        data?.error?.message ||
-        data?.message ||
-        text ||
-        `Upstream error (${upstream.status})`;
+      const detail = extractUpstreamErrorDetail(data, text, upstream.status);
       res.status(upstream.status).json({ error: detail });
       return;
     }
@@ -329,13 +385,23 @@ app.post("/api/complete", async (req, res) => {
     res.json({
       suggestion,
       trace: debugTrace
-        ? {
+        ? buildTracePayload({
+            requestKind: "Tab 补全",
             model: finalModel,
             temperature: finalTemperature,
             maxTokens: finalMaxTokens,
             systemPrompt: finalSystemPrompt,
-            userPrompt: userMessage
-          }
+            userPrompt: userMessage,
+            metrics: buildTraceMetrics({
+              requestKind: "Tab 补全",
+              requestStartedAtIso,
+              promptTokenStats,
+              headersLatencyMs,
+              totalMs,
+              outputText: suggestion,
+              usage: extractUsage(data)
+            })
+          })
         : undefined
     });
   } catch (err) {
@@ -411,6 +477,9 @@ app.post("/api/continue-chapter", async (req, res) => {
     characterSetting: safeCharacterSetting,
     targetChars: finalTargetChars
   });
+  const promptTokenStats = estimatePromptTokenStats(finalSystemPrompt, userMessage);
+  const requestStartedAtMs = performance.now();
+  const requestStartedAtIso = new Date().toISOString();
 
   try {
     const upstream = await fetch(completionUrl, {
@@ -430,15 +499,13 @@ app.post("/api/continue-chapter", async (req, res) => {
       })
     });
 
+    const headersLatencyMs = roundMetric(performance.now() - requestStartedAtMs);
     const text = await upstream.text();
+    const totalMs = roundMetric(performance.now() - requestStartedAtMs);
     const data = tryParseJson(text);
 
     if (!upstream.ok) {
-      const detail =
-        data?.error?.message ||
-        data?.message ||
-        text ||
-        `Upstream error (${upstream.status})`;
+      const detail = extractUpstreamErrorDetail(data, text, upstream.status);
       res.status(upstream.status).json({ error: detail });
       return;
     }
@@ -447,13 +514,23 @@ app.post("/api/continue-chapter", async (req, res) => {
     res.json({
       content,
       trace: debugTrace
-        ? {
+        ? buildTracePayload({
+            requestKind: "整章续写",
             model: finalModel,
             temperature: finalTemperature,
             maxTokens: finalMaxTokens,
             systemPrompt: finalSystemPrompt,
-            userPrompt: userMessage
-          }
+            userPrompt: userMessage,
+            metrics: buildTraceMetrics({
+              requestKind: "整章续写",
+              requestStartedAtIso,
+              promptTokenStats,
+              headersLatencyMs,
+              totalMs,
+              outputText: content,
+              usage: extractUsage(data)
+            })
+          })
         : undefined
     });
   } catch (err) {
@@ -527,6 +604,9 @@ app.post("/api/polish", async (req, res) => {
     chapterSetting,
     characterSetting
   });
+  const promptTokenStats = estimatePromptTokenStats(finalSystemPrompt, userMessage);
+  const requestStartedAtMs = performance.now();
+  const requestStartedAtIso = new Date().toISOString();
 
   try {
     const upstream = await fetch(completionUrl, {
@@ -546,15 +626,13 @@ app.post("/api/polish", async (req, res) => {
       })
     });
 
+    const headersLatencyMs = roundMetric(performance.now() - requestStartedAtMs);
     const text = await upstream.text();
+    const totalMs = roundMetric(performance.now() - requestStartedAtMs);
     const data = tryParseJson(text);
 
     if (!upstream.ok) {
-      const detail =
-        data?.error?.message ||
-        data?.message ||
-        text ||
-        `Upstream error (${upstream.status})`;
+      const detail = extractUpstreamErrorDetail(data, text, upstream.status);
       res.status(upstream.status).json({ error: detail });
       return;
     }
@@ -563,13 +641,23 @@ app.post("/api/polish", async (req, res) => {
     res.json({
       polishedText,
       trace: debugTrace
-        ? {
+        ? buildTracePayload({
+            requestKind: "选中润色",
             model: finalModel,
             temperature: finalTemperature,
             maxTokens: finalMaxTokens,
             systemPrompt: finalSystemPrompt,
-            userPrompt: userMessage
-          }
+            userPrompt: userMessage,
+            metrics: buildTraceMetrics({
+              requestKind: "选中润色",
+              requestStartedAtIso,
+              promptTokenStats,
+              headersLatencyMs,
+              totalMs,
+              outputText: polishedText,
+              usage: extractUsage(data)
+            })
+          })
         : undefined
     });
   } catch (err) {
@@ -727,6 +815,264 @@ function estimatePolishMaxTokens(selectedText) {
   return clampInt(estimated, 120, 2200, 600);
 }
 
+function roundMetric(value, digits = 0) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return null;
+  const factor = 10 ** digits;
+  return Math.round(numeric * factor) / factor;
+}
+
+function estimateTextTokens(text) {
+  const source = String(text || "").replace(/\r/g, "");
+  if (!source.trim()) return 0;
+
+  let tokens = 0;
+  let asciiBufferLength = 0;
+
+  const flushAscii = () => {
+    if (!asciiBufferLength) return;
+    tokens += Math.ceil(asciiBufferLength / 4);
+    asciiBufferLength = 0;
+  };
+
+  for (const ch of source) {
+    const code = ch.codePointAt(0) || 0;
+    if (/\s/.test(ch)) {
+      flushAscii();
+      continue;
+    }
+
+    if (isCjkCodePoint(code)) {
+      flushAscii();
+      tokens += 1.3;
+      continue;
+    }
+
+    if (/[A-Za-z0-9]/.test(ch)) {
+      asciiBufferLength += 1;
+      continue;
+    }
+
+    flushAscii();
+    tokens += 0.6;
+  }
+
+  flushAscii();
+  return Math.max(1, Math.round(tokens));
+}
+
+function isCjkCodePoint(code) {
+  return (
+    (code >= 0x3400 && code <= 0x4dbf) ||
+    (code >= 0x4e00 && code <= 0x9fff) ||
+    (code >= 0xf900 && code <= 0xfaff)
+  );
+}
+
+function estimatePromptTokenStats(systemPrompt, userPrompt) {
+  const systemPromptTokensEstimated = estimateTextTokens(systemPrompt);
+  const userPromptTokensEstimated = estimateTextTokens(userPrompt);
+  return {
+    systemPromptTokensEstimated,
+    userPromptTokensEstimated,
+    promptTokensEstimated: systemPromptTokensEstimated + userPromptTokensEstimated + 6
+  };
+}
+
+function pickNumericMetric(...values) {
+  for (const value of values) {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) {
+      return Math.round(numeric);
+    }
+  }
+  return null;
+}
+
+function normalizeUsageMetrics(usage) {
+  if (!usage || typeof usage !== "object") return null;
+
+  const promptTokens = pickNumericMetric(
+    usage.prompt_tokens,
+    usage.promptTokens,
+    usage.input_tokens,
+    usage.inputTokens
+  );
+  const completionTokens = pickNumericMetric(
+    usage.completion_tokens,
+    usage.completionTokens,
+    usage.output_tokens,
+    usage.outputTokens
+  );
+  const totalTokens = pickNumericMetric(
+    usage.total_tokens,
+    usage.totalTokens,
+    promptTokens !== null && completionTokens !== null ? promptTokens + completionTokens : null
+  );
+
+  if (promptTokens === null && completionTokens === null && totalTokens === null) {
+    return null;
+  }
+
+  return {
+    promptTokens,
+    completionTokens,
+    totalTokens
+  };
+}
+
+function extractUsage(payload) {
+  const candidates = [
+    payload?.usage,
+    payload?.response?.usage,
+    payload?.data?.usage,
+    payload?.meta?.usage,
+    payload?.x_groq?.usage
+  ];
+
+  for (const candidate of candidates) {
+    const normalized = normalizeUsageMetrics(candidate);
+    if (normalized) return normalized;
+  }
+
+  return null;
+}
+
+function buildTraceMetrics(payload) {
+  const promptTokenStats = payload.promptTokenStats || estimatePromptTokenStats("", "");
+  const usage = payload.usage || null;
+  const completionTokensEstimated = estimateTextTokens(payload.outputText || "");
+  const completionTokenBasis = usage?.completionTokens ?? completionTokensEstimated;
+  const totalMs = payload.totalMs ?? null;
+
+  return {
+    requestKind: payload.requestKind || "",
+    apiRequestStartedAt: payload.requestStartedAtIso || "",
+    upstreamHeadersLatencyMs: payload.headersLatencyMs ?? null,
+    upstreamFirstEventLatencyMs: payload.firstEventLatencyMs ?? null,
+    upstreamFirstReasoningLatencyMs: payload.firstReasoningLatencyMs ?? null,
+    upstreamFirstTokenLatencyMs: payload.firstTokenLatencyMs ?? null,
+    upstreamTotalMs: totalMs,
+    promptTokensEstimated: promptTokenStats.promptTokensEstimated,
+    systemPromptTokensEstimated: promptTokenStats.systemPromptTokensEstimated,
+    userPromptTokensEstimated: promptTokenStats.userPromptTokensEstimated,
+    promptTokensActual: usage?.promptTokens ?? null,
+    completionTokensEstimated,
+    completionTokensActual: usage?.completionTokens ?? null,
+    totalTokensActual: usage?.totalTokens ?? null,
+    outputChars: String(payload.outputText || "").length,
+    streamChunkCount: payload.streamChunkCount ?? null,
+    outputTokensPerSecond:
+      Number.isFinite(completionTokenBasis) && Number.isFinite(totalMs) && totalMs > 0
+        ? roundMetric((completionTokenBasis / totalMs) * 1000, 2)
+        : null,
+    usageSource: usage
+      ? usage.completionTokens === null
+        ? "provider_with_estimated_fallback"
+        : "provider"
+      : "estimated"
+  };
+}
+
+function buildTracePayload(payload) {
+  return {
+    type: payload.type || "trace",
+    requestKind: payload.requestKind || "",
+    model: payload.model || "",
+    temperature: payload.temperature,
+    maxTokens: payload.maxTokens,
+    thinkingMode: payload.thinkingMode || "",
+    systemPrompt: payload.systemPrompt || "",
+    userPrompt: payload.userPrompt || "",
+    metrics: payload.metrics || {}
+  };
+}
+
+function extractUpstreamErrorDetail(data, text, status) {
+  return (
+    data?.error?.message ||
+    data?.message ||
+    text ||
+    `Upstream error (${status})`
+  );
+}
+
+function shouldRetryWithoutStreamUsage(status, detail) {
+  if (![400, 404, 422].includes(status)) return false;
+  const text = String(detail || "").toLowerCase();
+  return (
+    text.includes("stream_options") ||
+    text.includes("include_usage") ||
+    text.includes("unsupported") ||
+    text.includes("unknown") ||
+    text.includes("extra")
+  );
+}
+
+function shouldDisableThinkingForTab(apiBaseUrl, model) {
+  const normalizedApiBaseUrl = String(apiBaseUrl || "").toLowerCase();
+  const normalizedModel = String(model || "").toLowerCase();
+  return (
+    normalizedApiBaseUrl.includes("dashscope.aliyuncs.com") ||
+    normalizedModel.startsWith("qwen") ||
+    normalizedModel.startsWith("qwq")
+  );
+}
+
+async function postStreamCompletionWithUsageFallback(url, headers, upstreamBody) {
+  const requestInit = {
+    method: "POST",
+    headers
+  };
+
+  let upstream = await fetch(url, {
+    ...requestInit,
+    body: JSON.stringify({
+      ...upstreamBody,
+      stream: true,
+      stream_options: { include_usage: true }
+    })
+  });
+
+  if (!upstream.ok) {
+    const errorText = await upstream.text();
+    const errorData = tryParseJson(errorText);
+    const detail = extractUpstreamErrorDetail(errorData, errorText, upstream.status);
+
+    if (!shouldRetryWithoutStreamUsage(upstream.status, detail)) {
+      return {
+        upstream: null,
+        errorStatus: upstream.status,
+        errorDetail: detail
+      };
+    }
+
+    upstream = await fetch(url, {
+      ...requestInit,
+      body: JSON.stringify({
+        ...upstreamBody,
+        stream: true
+      })
+    });
+
+    if (!upstream.ok) {
+      const fallbackText = await upstream.text();
+      const fallbackData = tryParseJson(fallbackText);
+      return {
+        upstream: null,
+        errorStatus: upstream.status,
+        errorDetail: extractUpstreamErrorDetail(fallbackData, fallbackText, upstream.status)
+      };
+    }
+  }
+
+  return {
+    upstream,
+    errorStatus: null,
+    errorDetail: ""
+  };
+}
+
 function extractStreamTextDelta(payload) {
   const candidates = [
     payload?.choices?.[0]?.delta?.content,
@@ -738,6 +1084,24 @@ function extractStreamTextDelta(payload) {
     payload?.output_text
   ];
 
+  return extractFirstTextCandidate(candidates);
+}
+
+function extractStreamReasoningDelta(payload) {
+  const candidates = [
+    payload?.choices?.[0]?.delta?.reasoning_content,
+    payload?.choices?.[0]?.delta?.reasoning,
+    payload?.choices?.[0]?.delta?.reasoning_text,
+    payload?.choices?.[0]?.message?.reasoning_content,
+    payload?.choices?.[0]?.reasoning_content,
+    payload?.delta?.reasoning_content,
+    payload?.reasoning_content
+  ];
+
+  return extractFirstTextCandidate(candidates);
+}
+
+function extractFirstTextCandidate(candidates) {
   for (const item of candidates) {
     const text = extractTextFromAny(item);
     if (text) return text;
@@ -783,3 +1147,5 @@ function takeFirstSentence(text) {
 
   return output.trim();
 }
+
+
