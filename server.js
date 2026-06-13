@@ -146,6 +146,7 @@ app.post("/api/complete", async (req, res) => {
     chapterTitle,
     chapterSetting,
     characterSetting,
+    relevantMemory,
     paragraphMemory
   } = req.body || {};
 
@@ -190,6 +191,7 @@ app.post("/api/complete", async (req, res) => {
     chapterTitle,
     chapterSetting,
     characterSetting,
+    relevantMemory,
     paragraphMemory
   });
   const promptTokenStats = estimatePromptTokenStats(finalSystemPrompt, userMessage);
@@ -426,7 +428,8 @@ app.post("/api/continue-chapter", async (req, res) => {
     novelTitle,
     chapterTitle,
     chapterSetting,
-    characterSetting
+    characterSetting,
+    relevantMemory
   } = req.body || {};
 
   const safeContext = typeof context === "string" ? context : "";
@@ -475,6 +478,7 @@ app.post("/api/continue-chapter", async (req, res) => {
     chapterTitle,
     chapterSetting: safeChapterSetting,
     characterSetting: safeCharacterSetting,
+    relevantMemory,
     targetChars: finalTargetChars
   });
   const promptTokenStats = estimatePromptTokenStats(finalSystemPrompt, userMessage);
@@ -556,7 +560,8 @@ app.post("/api/polish", async (req, res) => {
     novelTitle,
     chapterTitle,
     chapterSetting,
-    characterSetting
+    characterSetting,
+    relevantMemory
   } = req.body || {};
 
   const safeSelectedText = typeof selectedText === "string" ? selectedText : "";
@@ -602,7 +607,8 @@ app.post("/api/polish", async (req, res) => {
     novelTitle,
     chapterTitle,
     chapterSetting,
-    characterSetting
+    characterSetting,
+    relevantMemory
   });
   const promptTokenStats = estimatePromptTokenStats(finalSystemPrompt, userMessage);
   const requestStartedAtMs = performance.now();
@@ -667,6 +673,106 @@ app.post("/api/polish", async (req, res) => {
   }
 });
 
+app.post("/api/check-chapter", async (req, res) => {
+  const {
+    content,
+    apiBaseUrl,
+    apiKey,
+    chapterModel,
+    model,
+    temperature,
+    maxTokens,
+    novelTitle,
+    chapterTitle,
+    chapterSetting,
+    characterSetting,
+    scenes,
+    knowledgeCards,
+    relevantMemory
+  } = req.body || {};
+
+  const safeContent = typeof content === "string" ? content : "";
+  if (!safeContent.trim()) {
+    res.status(400).json({ error: "content is required" });
+    return;
+  }
+
+  const finalApiBaseUrl = trimTrailingSlash(
+    typeof apiBaseUrl === "string" && apiBaseUrl.trim()
+      ? apiBaseUrl
+      : defaultConfig.apiBaseUrl
+  );
+  const finalApiKey =
+    typeof apiKey === "string" && apiKey.trim() ? apiKey.trim() : process.env.LLM_API_KEY;
+  const finalModel =
+    typeof chapterModel === "string" && chapterModel.trim()
+      ? chapterModel.trim()
+      : typeof model === "string" && model.trim()
+        ? model.trim()
+        : defaultConfig.chapterModel;
+  const finalTemperature = clampFloat(temperature, 0, 2, 0.2);
+  const finalMaxTokens = clampInt(maxTokens, 400, 2200, 900);
+  const systemPrompt = [
+    "你是一名严格但务实的中文商业小说编辑。",
+    "请检查章节是否推进目标、人物是否一致、是否重复描写、是否存在废段、伏笔是否清晰。",
+    "只输出中文诊断报告，使用短标题和项目符号，给出可执行修改建议，不要重写正文。"
+  ].join("\n");
+  const userMessage = buildChapterCheckUserMessage({
+    content: safeContent,
+    novelTitle,
+    chapterTitle,
+    chapterSetting,
+    characterSetting,
+    scenes,
+    knowledgeCards,
+    relevantMemory
+  });
+
+  if (!finalApiKey) {
+    res.status(400).json({
+      error:
+        "API key is missing. Provide apiKey in request body or set LLM_API_KEY in .env"
+    });
+    return;
+  }
+
+  try {
+    const upstream = await fetch(`${finalApiBaseUrl}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${finalApiKey}`
+      },
+      body: JSON.stringify({
+        model: finalModel,
+        temperature: finalTemperature,
+        max_tokens: finalMaxTokens,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userMessage }
+        ]
+      })
+    });
+
+    const text = await upstream.text();
+    const data = tryParseJson(text);
+
+    if (!upstream.ok) {
+      const detail = extractUpstreamErrorDetail(data, text, upstream.status);
+      res.status(upstream.status).json({ error: detail });
+      return;
+    }
+
+    res.json({
+      report: normalizeLongContent(data?.choices?.[0]?.message?.content || "")
+    });
+  } catch (err) {
+    res.status(500).json({
+      error: err instanceof Error ? err.message : "Unknown server error"
+    });
+  }
+});
+
 app.get("*", (_req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
 });
@@ -680,6 +786,8 @@ function buildUserMessage(payload) {
   const safeNovelTitle = safeText(payload.novelTitle, 120);
   const safeChapterTitle = safeText(payload.chapterTitle, 120);
   const safeChapterSetting = safeText(payload.chapterSetting, 1600);
+  const safeCharacterSetting = safeText(payload.characterSetting, 1600);
+  const relevantMemory = normalizeMemoryItems(payload.relevantMemory, 5);
   const beforeParagraphs = normalizeParagraphArray(payload.paragraphMemory?.before, 2);
   const afterParagraphs = normalizeParagraphArray(payload.paragraphMemory?.after, 1);
 
@@ -687,7 +795,9 @@ function buildUserMessage(payload) {
     "请根据以下信息在光标处续写。",
     safeNovelTitle ? `小说标题：\n${safeNovelTitle}` : "",
     safeChapterTitle ? `章节标题：\n${safeChapterTitle}` : "",
+    safeCharacterSetting ? `人物设定：\n${safeCharacterSetting}` : "",
     safeChapterSetting ? `章节设定：\n${safeChapterSetting}` : "",
+    relevantMemory.length ? `检索到的相关设定/旧文：\n${formatMemoryItems(relevantMemory)}` : "",
     beforeParagraphs.length
       ? `光标前段落记忆：\n${beforeParagraphs
           .map((item, index) => `${index + 1}. ${item}`)
@@ -712,6 +822,7 @@ function buildChapterUserMessage(payload) {
   const safeChapterSetting = safeText(payload.chapterSetting, 2000);
   const safeCharacterSetting = safeText(payload.characterSetting, 2000);
   const safeTargetChars = clampInt(payload.targetChars, 300, 5000, 1200);
+  const relevantMemory = normalizeMemoryItems(payload.relevantMemory, 8);
 
   const sections = [
     "请根据以下信息续写完整章节内容。",
@@ -719,6 +830,7 @@ function buildChapterUserMessage(payload) {
     safeChapterTitle ? `章节标题：\n${safeChapterTitle}` : "",
     safeCharacterSetting ? `人物设定：\n${safeCharacterSetting}` : "",
     safeChapterSetting ? `章节设定：\n${safeChapterSetting}` : "",
+    relevantMemory.length ? `检索到的相关设定/旧文：\n${formatMemoryItems(relevantMemory)}` : "",
     safeContext ? `已有正文（光标前）：\n${safeContext}` : "",
     `目标长度：约 ${safeTargetChars} 字。`,
     "请直接输出续写正文。"
@@ -735,6 +847,7 @@ function buildPolishUserMessage(payload) {
   const safeCharacterSetting = safeText(payload.characterSetting, 2000);
   const safeStyleSkillPrompt = safeText(payload.styleSkillPrompt, 4000);
   const safeStyleRequirement = safeText(payload.styleRequirement, 1000);
+  const relevantMemory = normalizeMemoryItems(payload.relevantMemory, 8);
 
   const sections = [
     "请润色下面这段已写好的正文。",
@@ -742,10 +855,45 @@ function buildPolishUserMessage(payload) {
     safeChapterTitle ? `章节标题：\n${safeChapterTitle}` : "",
     safeCharacterSetting ? `人物设定：\n${safeCharacterSetting}` : "",
     safeChapterSetting ? `章节设定：\n${safeChapterSetting}` : "",
+    relevantMemory.length ? `检索到的相关设定/旧文：\n${formatMemoryItems(relevantMemory)}` : "",
     safeStyleSkillPrompt ? `风格预设：\n${safeStyleSkillPrompt}` : "",
     safeStyleRequirement ? `额外风格要求：\n${safeStyleRequirement}` : "",
     `原文：\n${safeSelectedText}`,
     "请只输出润色后的正文，不要解释。"
+  ].filter(Boolean);
+
+  return sections.join("\n\n");
+}
+
+function buildChapterCheckUserMessage(payload) {
+  const safeContent = safeText(payload.content, 18000);
+  const safeNovelTitle = safeText(payload.novelTitle, 120);
+  const safeChapterTitle = safeText(payload.chapterTitle, 120);
+  const safeChapterSetting = safeText(payload.chapterSetting, 2400);
+  const safeCharacterSetting = safeText(payload.characterSetting, 2400);
+  const sceneItems = normalizeSceneItems(payload.scenes, 12);
+  const knowledgeItems = normalizeKnowledgeItems(payload.knowledgeCards, 16);
+  const relevantMemory = normalizeMemoryItems(payload.relevantMemory, 8);
+
+  const sections = [
+    "请检查下面这一章，重点找问题并给出修改建议。",
+    safeNovelTitle ? `小说标题：\n${safeNovelTitle}` : "",
+    safeChapterTitle ? `章节标题：\n${safeChapterTitle}` : "",
+    safeCharacterSetting ? `人物设定：\n${safeCharacterSetting}` : "",
+    safeChapterSetting ? `章节设定：\n${safeChapterSetting}` : "",
+    sceneItems.length ? `场景卡片：\n${formatSceneItems(sceneItems)}` : "",
+    knowledgeItems.length ? `设定卡片：\n${formatKnowledgeItems(knowledgeItems)}` : "",
+    relevantMemory.length ? `检索到的相关设定/旧文：\n${formatMemoryItems(relevantMemory)}` : "",
+    `正文：\n${safeContent}`,
+    [
+      "请按以下结构输出：",
+      "## 总体判断",
+      "## 主要问题",
+      "## 可立即修改",
+      "## 人物与设定一致性",
+      "## 重复/废段/节奏",
+      "## 伏笔与下一章钩子"
+    ].join("\n")
   ].filter(Boolean);
 
   return sections.join("\n\n");
@@ -801,6 +949,64 @@ function normalizeParagraphArray(value, maxItems) {
     .map((item) => safeText(item, 360))
     .filter(Boolean)
     .slice(-maxItems);
+}
+
+function normalizeMemoryItems(value, maxItems) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => ({
+      type: safeText(item?.type, 40),
+      title: safeText(item?.title, 100),
+      body: safeText(item?.body, 800)
+    }))
+    .filter((item) => item.title || item.body)
+    .slice(0, maxItems);
+}
+
+function formatMemoryItems(items) {
+  return items
+    .map((item, index) => {
+      const title = item.title ? `《${item.title}》` : "未命名";
+      const type = item.type ? `[${item.type}]` : "[相关]";
+      return `${index + 1}. ${type}${title}\n${item.body}`;
+    })
+    .join("\n");
+}
+
+function normalizeSceneItems(value, maxItems) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => ({
+      title: safeText(item?.title, 100),
+      status: safeText(item?.status, 40),
+      note: safeText(item?.note, 800)
+    }))
+    .filter((item) => item.title || item.note)
+    .slice(0, maxItems);
+}
+
+function formatSceneItems(items) {
+  return items
+    .map((item, index) => `${index + 1}. ${item.title || "未命名场景"}（${item.status || "todo"}）\n${item.note}`)
+    .join("\n");
+}
+
+function normalizeKnowledgeItems(value, maxItems) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => ({
+      type: safeText(item?.type, 40),
+      title: safeText(item?.title, 100),
+      body: safeText(item?.body, 800)
+    }))
+    .filter((item) => item.title || item.body)
+    .slice(0, maxItems);
+}
+
+function formatKnowledgeItems(items) {
+  return items
+    .map((item, index) => `${index + 1}. [${item.type || "card"}] ${item.title || "未命名设定"}\n${item.body}`)
+    .join("\n");
 }
 
 function estimateChapterMaxTokens(targetChars, fallback) {

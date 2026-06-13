@@ -12,16 +12,37 @@ const MAX_CONTEXT_CHARS = 3000;
 const TAB_CONTEXT_CHARS = 420;
 const AUTO_WINDOW_MS = 60 * 1000;
 const FILE_MEMORY_SUFFIX = ".memory.json";
+const MAX_CHAPTER_SNAPSHOTS = 30;
+const MAX_AI_LOG_ITEMS = 120;
+const MAX_RETRIEVED_CONTEXT_ITEMS = 8;
 const DEFAULT_TAB_SETTINGS = {
   maxTokens: 56,
   inputPauseMs: 900,
   autoMinIntervalMs: 6000,
   autoMaxPerMinute: 5
 };
+const KNOWLEDGE_TYPE_LABELS = {
+  character: "人物",
+  world: "世界观",
+  foreshadow: "伏笔",
+  rule: "禁忌"
+};
+const SCENE_STATUS_LABELS = {
+  todo: "待写",
+  drafting: "草稿中",
+  done: "完成"
+};
+const AI_SOURCE_LABELS = {
+  tab: "Tab 补全",
+  chapter: "整章续写",
+  polish: "选中润色",
+  check: "章节检查"
+};
 const DEFAULT_STYLE_SKILLS = [
   {
     id: "seed_high_pressure_chase",
     name: "高压追逃·短句推进",
+    category: "style",
     prompt: [
       "用于高压追逐与危机段落的润色。",
       "要求：",
@@ -31,6 +52,82 @@ const DEFAULT_STYLE_SKILLS = [
       "4) 每段必须推进局势或抬高风险；",
       "5) 段尾尽量留下钩子。"
     ].join("\n")
+  },
+  {
+    id: "seed_task_dialogue",
+    name: "任务卡·压缩对白",
+    category: "task",
+    prompt: [
+      "用于对白段落的改写。",
+      "要求：",
+      "1) 保留原本信息量；",
+      "2) 每句对白更短，更贴合人物身份；",
+      "3) 删除解释性废话；",
+      "4) 用动作或沉默补出压迫感。"
+    ].join("\n")
+  },
+  {
+    id: "seed_avoid_literary",
+    name: "禁忌卡·去文艺腔",
+    category: "avoid",
+    prompt: [
+      "用于清理过度文艺化表达。",
+      "要求：",
+      "1) 删除空泛抒情和抽象感慨；",
+      "2) 避免连续比喻、排比、反问；",
+      "3) 不反复写眼神、气氛、沉默；",
+      "4) 改成可见动作、选择和后果。"
+    ].join("\n")
+  }
+];
+const API_PROVIDER_PRESETS = [
+  {
+    id: "custom",
+    name: "自定义",
+    description: "手动填写任意 OpenAI 兼容接口。",
+    apiBaseUrl: "",
+    model: "",
+    chapterModel: ""
+  },
+  {
+    id: "openai",
+    name: "OpenAI",
+    description: "官方 OpenAI 接口，适合直接使用 GPT 系列模型。",
+    apiBaseUrl: "https://api.openai.com/v1",
+    model: "gpt-4o-mini",
+    chapterModel: "gpt-4.1-mini"
+  },
+  {
+    id: "openrouter",
+    name: "OpenRouter",
+    description: "聚合路由平台，模型名通常需要带提供商前缀。",
+    apiBaseUrl: "https://openrouter.ai/api/v1",
+    model: "openai/gpt-4o-mini",
+    chapterModel: "openai/gpt-4.1-mini"
+  },
+  {
+    id: "qwen",
+    name: "Qwen",
+    description: "阿里云百炼通用 Qwen 预设，适合常规中文写作。",
+    apiBaseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    model: "qwen3.5-flash",
+    chapterModel: "qwen-plus"
+  },
+  {
+    id: "qwen_code",
+    name: "Qwen Code",
+    description: "阿里云百炼代码向 Qwen 预设，适合代码与结构化生成。",
+    apiBaseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    model: "qwen-coder-plus",
+    chapterModel: "qwen-coder-plus"
+  },
+  {
+    id: "qwen_plan",
+    name: "Qwen Plan",
+    description: "阿里云百炼规划向预设，方便先起草大纲或规划再继续手改模型。",
+    apiBaseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    model: "qwen-plus",
+    chapterModel: "qwen-max"
   }
 ];
 
@@ -38,6 +135,8 @@ const apiBaseUrlInput = document.getElementById("apiBaseUrl");
 const apiKeyInput = document.getElementById("apiKey");
 const modelInput = document.getElementById("model");
 const chapterModelInput = document.getElementById("chapterModel");
+const apiProviderPresetSelect = document.getElementById("apiProviderPreset");
+const apiProviderPresetHintEl = document.getElementById("apiProviderPresetHint");
 const saveApiConfigBtn = document.getElementById("saveApiConfig");
 const clearApiConfigBtn = document.getElementById("clearApiConfig");
 
@@ -55,6 +154,8 @@ const chapterListEl = document.getElementById("chapterList");
 
 const exportTxtBtn = document.getElementById("exportTxtBtn");
 const exportMdBtn = document.getElementById("exportMdBtn");
+const exportCleanTxtBtn = document.getElementById("exportCleanTxtBtn");
+const exportEpubBtn = document.getElementById("exportEpubBtn");
 const chooseFolderBtn = document.getElementById("chooseFolderBtn");
 const exportFolderBtn = document.getElementById("exportFolderBtn");
 const importFolderBtn = document.getElementById("importFolderBtn");
@@ -64,6 +165,7 @@ const explorerListEl = document.getElementById("explorerList");
 
 const statusEl = document.getElementById("status");
 const autosaveInfoEl = document.getElementById("autosaveInfo");
+const paperStatsEl = document.getElementById("paperStats");
 const suggestionPreviewEl = document.getElementById("suggestionPreview");
 const folderInfoEl = document.getElementById("folderInfo");
 const apiTracePanel = document.getElementById("apiTracePanel");
@@ -92,6 +194,26 @@ const polishRequirementInput = document.getElementById("polishRequirementInput")
 const polishSelectionBtn = document.getElementById("polishSelectionBtn");
 const openStyleSkillsBtn = document.getElementById("openStyleSkillsBtn");
 const openStyleSkillsQuickBtn = document.getElementById("openStyleSkillsQuickBtn");
+const refreshStatsBtn = document.getElementById("refreshStatsBtn");
+const statsPanel = document.getElementById("statsPanel");
+const createSnapshotBtn = document.getElementById("createSnapshotBtn");
+const snapshotSelect = document.getElementById("snapshotSelect");
+const restoreSnapshotBtn = document.getElementById("restoreSnapshotBtn");
+const snapshotInfo = document.getElementById("snapshotInfo");
+const sceneTitleInput = document.getElementById("sceneTitleInput");
+const sceneStatusInput = document.getElementById("sceneStatusInput");
+const sceneNoteInput = document.getElementById("sceneNoteInput");
+const addSceneBtn = document.getElementById("addSceneBtn");
+const sceneList = document.getElementById("sceneList");
+const knowledgeTypeInput = document.getElementById("knowledgeTypeInput");
+const knowledgeTitleInput = document.getElementById("knowledgeTitleInput");
+const knowledgeBodyInput = document.getElementById("knowledgeBodyInput");
+const addKnowledgeCardBtn = document.getElementById("addKnowledgeCardBtn");
+const knowledgeCardList = document.getElementById("knowledgeCardList");
+const checkChapterBtn = document.getElementById("checkChapterBtn");
+const chapterCheckResult = document.getElementById("chapterCheckResult");
+const aiLogSummary = document.getElementById("aiLogSummary");
+const aiLogList = document.getElementById("aiLogList");
 
 const settingsModal = document.getElementById("settingsModal");
 const closeSettingsModalBtn = document.getElementById("closeSettingsModalBtn");
@@ -166,6 +288,7 @@ async function initialize() {
   loadStyleSkills();
   renderThemeOptions();
   renderStyleSkillSelect();
+  renderApiProviderPresetOptions();
   loadApiConfigFromLocal();
   await loadServerDefaults();
   renderSystemPromptInputs();
@@ -173,6 +296,8 @@ async function initialize() {
   renderStyleSkillCards();
   loadProjectFromLocal();
   renderProject();
+  renderWorkbench();
+  openStyleSkillsFromLegacyLink();
   defaultsLoaded = true;
   setStatus("状态：就绪");
   autosaveInfoEl.textContent = "自动保存：就绪";
@@ -198,6 +323,24 @@ function bindEvents() {
     apiKeyInput.value = "";
     saveApiConfigToLocal();
     setStatus("状态：API Key 已清空");
+  });
+
+  apiProviderPresetSelect?.addEventListener("change", () => {
+    const presetId = apiProviderPresetSelect.value;
+    if (presetId === "custom") {
+      renderApiProviderPresetHint("custom");
+      saveApiConfigToLocal();
+      setStatus("状态：已切换为自定义接口配置");
+      return;
+    }
+
+    applyApiProviderPreset(presetId, { persist: true });
+  });
+
+  [apiBaseUrlInput, modelInput, chapterModelInput].forEach((input) => {
+    input?.addEventListener("input", () => {
+      syncApiProviderPresetSelection();
+    });
   });
 
   autoTabToggleBtn.addEventListener("click", () => {
@@ -331,6 +474,7 @@ function bindEvents() {
     } else {
       queueAutosave();
     }
+    renderStats();
     triggerDebouncedCompletion();
   });
 
@@ -398,6 +542,7 @@ function bindEvents() {
     renderChapterList();
     renderCurrentChapter();
     queueAutosave();
+    renderWorkbench();
     setStatus("状态：已新建章节");
     editor.focus();
   });
@@ -411,6 +556,7 @@ function bindEvents() {
       chapter.title = "第1章";
       renderCurrentChapter();
       queueAutosave();
+      renderWorkbench();
       setStatus("状态：至少保留一个章节，已清空当前章节内容");
       return;
     }
@@ -424,6 +570,7 @@ function bindEvents() {
     renderChapterList();
     renderCurrentChapter();
     queueAutosave();
+    renderWorkbench();
     setStatus("状态：章节已删除");
   });
 
@@ -439,6 +586,7 @@ function bindEvents() {
     renderChapterList();
     renderCurrentChapter();
     clearSuggestion();
+    renderWorkbench();
     setStatus("状态：已切换章节");
   });
 
@@ -454,6 +602,74 @@ function bindEvents() {
     const fileName = `${safeFileName(project.title || "novel")}.md`;
     downloadText(fileName, markdown, "text/markdown;charset=utf-8");
     setStatus("状态：已导出 MD");
+  });
+
+  exportCleanTxtBtn?.addEventListener("click", () => {
+    const text = buildCleanNovelText(project);
+    const fileName = `${safeFileName(project.title || "novel")}-正文.txt`;
+    downloadText(fileName, text, "text/plain;charset=utf-8");
+    setStatus("状态：已导出纯正文 TXT");
+  });
+
+  exportEpubBtn?.addEventListener("click", async () => {
+    try {
+      const blob = buildEpubBlob(project);
+      const fileName = `${safeFileName(project.title || "novel")}.epub`;
+      downloadBlob(fileName, blob);
+      setStatus("状态：已导出 EPUB");
+    } catch (err) {
+      setStatus(`状态：EPUB 导出失败 - ${err.message}`);
+    }
+  });
+
+  refreshStatsBtn?.addEventListener("click", () => {
+    renderStats();
+    setStatus("状态：统计已刷新");
+  });
+
+  createSnapshotBtn?.addEventListener("click", () => {
+    createChapterSnapshot("手动快照", "manual");
+    queueAutosave();
+    renderSnapshots();
+    setStatus("状态：已保存当前章节快照");
+  });
+
+  restoreSnapshotBtn?.addEventListener("click", () => {
+    restoreSelectedSnapshot();
+  });
+
+  snapshotSelect?.addEventListener("change", () => {
+    renderSnapshots();
+  });
+
+  addSceneBtn?.addEventListener("click", () => {
+    addSceneFromInputs();
+  });
+
+  sceneList?.addEventListener("click", (event) => {
+    const origin = event.target instanceof Element ? event.target : null;
+    if (!origin) return;
+    const deleteButton = origin.closest("button[data-delete-scene-id]");
+    if (deleteButton) {
+      deleteScene(deleteButton.dataset.deleteSceneId);
+    }
+  });
+
+  addKnowledgeCardBtn?.addEventListener("click", () => {
+    addKnowledgeCardFromInputs();
+  });
+
+  knowledgeCardList?.addEventListener("click", (event) => {
+    const origin = event.target instanceof Element ? event.target : null;
+    if (!origin) return;
+    const deleteButton = origin.closest("button[data-delete-knowledge-id]");
+    if (deleteButton) {
+      deleteKnowledgeCard(deleteButton.dataset.deleteKnowledgeId);
+    }
+  });
+
+  checkChapterBtn?.addEventListener("click", async () => {
+    await checkCurrentChapter();
   });
 
   chooseFolderBtn.addEventListener("click", async () => {
@@ -540,6 +756,8 @@ function createDefaultProject() {
   return {
     title: "未命名小说",
     characterSetting: "",
+    knowledgeCards: [],
+    aiLog: [],
     chapters: [chapter],
     currentChapterId: chapter.id,
     updatedAt: Date.now()
@@ -552,6 +770,10 @@ function createChapter(title) {
     title,
     setting: "",
     content: "",
+    scenes: [],
+    snapshots: [],
+    aiMarks: [],
+    checkReport: "",
     updatedAt: Date.now()
   };
 }
@@ -574,6 +796,7 @@ function renderProject() {
   characterSettingInput.value = project.characterSetting;
   renderChapterList();
   renderCurrentChapter();
+  renderWorkbench();
 }
 
 function renderChapterList() {
@@ -601,6 +824,7 @@ function renderCurrentChapter() {
   setFileModeUI(false);
   clearPendingEdit({ silent: true });
   clearSuggestion();
+  renderWorkbench();
 }
 
 function isFileMode() {
@@ -622,6 +846,7 @@ function deactivateFileMode() {
 
 function queueAutosave() {
   clearTimeout(autosaveTimer);
+  autosaveInfoEl.textContent = "自动保存：保存中";
   autosaveTimer = setTimeout(() => {
     saveProjectToLocal();
   }, AUTOSAVE_MS);
@@ -629,8 +854,13 @@ function queueAutosave() {
 
 function saveProjectToLocal() {
   project.updatedAt = Date.now();
-  localStorage.setItem(PROJECT_STORAGE_KEY, JSON.stringify(project));
-  autosaveInfoEl.textContent = `自动保存：${formatTime(project.updatedAt)}`;
+  try {
+    localStorage.setItem(PROJECT_STORAGE_KEY, JSON.stringify(project));
+    autosaveInfoEl.textContent = `自动保存：已保存 ${formatTime(project.updatedAt)}`;
+  } catch (err) {
+    autosaveInfoEl.textContent = "自动保存：保存失败";
+    setStatus(`状态：自动保存失败 - ${err.message}`);
+  }
 }
 
 function loadProjectFromLocal() {
@@ -666,6 +896,8 @@ function sanitizeProject(value) {
   return {
     title: asText(value.title, "未命名小说"),
     characterSetting: asText(value.characterSetting),
+    knowledgeCards: sanitizeKnowledgeCards(value.knowledgeCards),
+    aiLog: sanitizeAiLog(value.aiLog),
     chapters,
     currentChapterId,
     updatedAt: Number(value.updatedAt) || Date.now()
@@ -680,12 +912,544 @@ function sanitizeChapter(value, index) {
     title: asText(value.title, `第${index + 1}章`),
     setting: asText(value.setting),
     content: asText(value.content),
+    scenes: sanitizeScenes(value.scenes),
+    snapshots: sanitizeSnapshots(value.snapshots),
+    aiMarks: sanitizeAiMarks(value.aiMarks),
+    checkReport: asText(value.checkReport),
     updatedAt: Number(value.updatedAt) || Date.now()
   };
 }
 
 function asText(value, fallback = "") {
   return typeof value === "string" ? value : fallback;
+}
+
+function sanitizeScenes(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => ({
+      id: asText(item?.id, createId()),
+      title: asText(item?.title).trim(),
+      note: asText(item?.note).trim(),
+      status: sanitizeSceneStatus(item?.status),
+      updatedAt: Number(item?.updatedAt) || Date.now()
+    }))
+    .filter((item) => item.title || item.note)
+    .slice(0, 80);
+}
+
+function sanitizeSceneStatus(value) {
+  return Object.hasOwn(SCENE_STATUS_LABELS, value) ? value : "todo";
+}
+
+function sanitizeKnowledgeCards(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => ({
+      id: asText(item?.id, createId()),
+      type: sanitizeKnowledgeType(item?.type),
+      title: asText(item?.title).trim(),
+      body: asText(item?.body).trim(),
+      updatedAt: Number(item?.updatedAt) || Date.now()
+    }))
+    .filter((item) => item.title || item.body)
+    .slice(0, 240);
+}
+
+function sanitizeKnowledgeType(value) {
+  return Object.hasOwn(KNOWLEDGE_TYPE_LABELS, value) ? value : "world";
+}
+
+function sanitizeSnapshots(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => ({
+      id: asText(item?.id, createId()),
+      label: asText(item?.label, "快照"),
+      source: asText(item?.source, "manual"),
+      title: asText(item?.title),
+      setting: asText(item?.setting),
+      content: asText(item?.content),
+      scenes: sanitizeScenes(item?.scenes),
+      createdAt: Number(item?.createdAt) || Date.now()
+    }))
+    .slice(0, MAX_CHAPTER_SNAPSHOTS);
+}
+
+function sanitizeAiMarks(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => ({
+      id: asText(item?.id, createId()),
+      source: sanitizeAiSource(item?.source),
+      start: Math.max(0, Number(item?.start) || 0),
+      end: Math.max(0, Number(item?.end) || 0),
+      preview: asText(item?.preview).slice(0, 200),
+      createdAt: Number(item?.createdAt) || Date.now()
+    }))
+    .filter((item) => item.end >= item.start)
+    .slice(-MAX_AI_LOG_ITEMS);
+}
+
+function sanitizeAiLog(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => ({
+      id: asText(item?.id, createId()),
+      chapterId: asText(item?.chapterId),
+      chapterTitle: asText(item?.chapterTitle),
+      source: sanitizeAiSource(item?.source),
+      chars: Math.max(0, Number(item?.chars) || 0),
+      preview: asText(item?.preview).slice(0, 240),
+      createdAt: Number(item?.createdAt) || Date.now()
+    }))
+    .filter((item) => item.chapterId && item.preview)
+    .slice(-MAX_AI_LOG_ITEMS);
+}
+
+function sanitizeAiSource(value) {
+  return Object.hasOwn(AI_SOURCE_LABELS, value) ? value : "tab";
+}
+
+function renderWorkbench() {
+  renderStats();
+  renderSnapshots();
+  renderScenes();
+  renderKnowledgeCards();
+  renderChapterCheck();
+  renderAiLog();
+}
+
+function renderStats() {
+  if (!statsPanel) return;
+  const currentChapter = getCurrentChapter();
+  const totalChars = project.chapters.reduce(
+    (sum, chapter) => sum + countWritingChars(chapter.content),
+    0
+  );
+  const currentChars = countWritingChars(currentChapter.content);
+  const aiChars = project.aiLog.reduce((sum, item) => sum + item.chars, 0);
+  const sceneCount = project.chapters.reduce(
+    (sum, chapter) => sum + (chapter.scenes?.length || 0),
+    0
+  );
+  const doneScenes = project.chapters.reduce(
+    (sum, chapter) => sum + (chapter.scenes || []).filter((item) => item.status === "done").length,
+    0
+  );
+  const stats = [
+    ["全书字数", formatNumber(totalChars)],
+    ["当前章", formatNumber(currentChars)],
+    ["章节数", formatNumber(project.chapters.length)],
+    ["场景进度", `${doneScenes}/${sceneCount || 0}`],
+    ["设定卡", formatNumber(project.knowledgeCards.length)],
+    ["AI 生成字数", formatNumber(aiChars)]
+  ];
+
+  if (paperStatsEl) {
+    paperStatsEl.textContent = `${formatNumber(currentChars)} 字`;
+  }
+
+  statsPanel.innerHTML = "";
+  stats.forEach(([label, value]) => {
+    const item = document.createElement("div");
+    item.className = "stat-item";
+    const strong = document.createElement("strong");
+    strong.textContent = value;
+    const span = document.createElement("span");
+    span.textContent = label;
+    item.append(strong, span);
+    statsPanel.appendChild(item);
+  });
+}
+
+function countWritingChars(text) {
+  return String(text || "").replace(/\s/g, "").length;
+}
+
+function formatNumber(value) {
+  return new Intl.NumberFormat("zh-CN").format(Number(value) || 0);
+}
+
+function renderSnapshots() {
+  if (!snapshotSelect || !snapshotInfo) return;
+  const chapter = getCurrentChapter();
+  const currentValue = snapshotSelect.value;
+  snapshotSelect.innerHTML = "";
+
+  if (!chapter.snapshots.length) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "暂无快照";
+    snapshotSelect.appendChild(option);
+    snapshotInfo.textContent = "手动保存快照，或接受 AI 改动前自动生成。";
+    return;
+  }
+
+  chapter.snapshots.forEach((snapshot) => {
+    const option = document.createElement("option");
+    option.value = snapshot.id;
+    option.textContent = `${formatTime(snapshot.createdAt)} · ${snapshot.label}`;
+    snapshotSelect.appendChild(option);
+  });
+
+  if (currentValue && chapter.snapshots.some((item) => item.id === currentValue)) {
+    snapshotSelect.value = currentValue;
+  }
+
+  const selected = chapter.snapshots.find((item) => item.id === snapshotSelect.value);
+  snapshotInfo.textContent = selected
+    ? `${selected.label}，${countWritingChars(selected.content)} 字`
+    : `共 ${chapter.snapshots.length} 个快照`;
+}
+
+function createChapterSnapshot(label, source = "manual") {
+  const chapter = getCurrentChapter();
+  const snapshot = {
+    id: createId(),
+    label,
+    source,
+    title: chapter.title,
+    setting: chapter.setting,
+    content: chapter.content,
+    scenes: (chapter.scenes || []).map((item) => ({ ...item })),
+    createdAt: Date.now()
+  };
+  chapter.snapshots = [snapshot, ...(chapter.snapshots || [])].slice(0, MAX_CHAPTER_SNAPSHOTS);
+  return snapshot;
+}
+
+function restoreSelectedSnapshot() {
+  const chapter = getCurrentChapter();
+  const snapshot = chapter.snapshots.find((item) => item.id === snapshotSelect?.value);
+  if (!snapshot) {
+    setStatus("状态：没有可恢复的快照");
+    return;
+  }
+
+  createChapterSnapshot("恢复前自动备份", "restore");
+  chapter.title = snapshot.title || chapter.title;
+  chapter.setting = snapshot.setting || "";
+  chapter.content = snapshot.content || "";
+  chapter.scenes = sanitizeScenes(snapshot.scenes);
+  chapter.updatedAt = Date.now();
+  renderChapterList();
+  renderCurrentChapter();
+  queueAutosave();
+  setStatus("状态：已恢复快照");
+}
+
+function renderScenes() {
+  if (!sceneList) return;
+  const chapter = getCurrentChapter();
+  sceneList.innerHTML = "";
+
+  if (!chapter.scenes.length) {
+    const empty = document.createElement("div");
+    empty.className = "workbench-note";
+    empty.textContent = "还没有场景卡。";
+    sceneList.appendChild(empty);
+    return;
+  }
+
+  chapter.scenes.forEach((scene) => {
+    const card = document.createElement("article");
+    card.className = "mini-card";
+    const head = document.createElement("div");
+    head.className = "mini-card-head";
+    const title = document.createElement("strong");
+    title.textContent = scene.title || "(未命名场景)";
+    const badge = document.createElement("span");
+    badge.className = "mini-badge";
+    badge.textContent = SCENE_STATUS_LABELS[scene.status] || "待写";
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "ghost danger";
+    del.dataset.deleteSceneId = scene.id;
+    del.textContent = "删除";
+    head.append(title, badge, del);
+    const pre = document.createElement("pre");
+    pre.textContent = scene.note || "(无备注)";
+    card.append(head, pre);
+    sceneList.appendChild(card);
+  });
+}
+
+function addSceneFromInputs() {
+  const title = sceneTitleInput?.value.trim() || "";
+  const note = sceneNoteInput?.value.trim() || "";
+  if (!title && !note) {
+    setStatus("状态：请先填写场景名或备注");
+    return;
+  }
+
+  const chapter = getCurrentChapter();
+  chapter.scenes.unshift({
+    id: createId(),
+    title,
+    note,
+    status: sanitizeSceneStatus(sceneStatusInput?.value),
+    updatedAt: Date.now()
+  });
+  chapter.updatedAt = Date.now();
+  if (sceneTitleInput) sceneTitleInput.value = "";
+  if (sceneNoteInput) sceneNoteInput.value = "";
+  renderScenes();
+  renderStats();
+  queueAutosave();
+  setStatus("状态：已添加场景卡片");
+}
+
+function deleteScene(sceneId) {
+  if (!sceneId) return;
+  const chapter = getCurrentChapter();
+  chapter.scenes = chapter.scenes.filter((item) => item.id !== sceneId);
+  chapter.updatedAt = Date.now();
+  renderScenes();
+  renderStats();
+  queueAutosave();
+  setStatus("状态：已删除场景卡片");
+}
+
+function renderKnowledgeCards() {
+  if (!knowledgeCardList) return;
+  knowledgeCardList.innerHTML = "";
+
+  if (!project.knowledgeCards.length) {
+    const empty = document.createElement("div");
+    empty.className = "workbench-note";
+    empty.textContent = "还没有人物、世界观或伏笔卡。";
+    knowledgeCardList.appendChild(empty);
+    return;
+  }
+
+  project.knowledgeCards.forEach((card) => {
+    const item = document.createElement("article");
+    item.className = "mini-card";
+    const head = document.createElement("div");
+    head.className = "mini-card-head";
+    const title = document.createElement("strong");
+    title.textContent = card.title || "(未命名设定)";
+    const badge = document.createElement("span");
+    badge.className = "mini-badge";
+    badge.textContent = KNOWLEDGE_TYPE_LABELS[card.type] || "设定";
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "ghost danger";
+    del.dataset.deleteKnowledgeId = card.id;
+    del.textContent = "删除";
+    head.append(title, badge, del);
+    const pre = document.createElement("pre");
+    pre.textContent = card.body || "(无内容)";
+    item.append(head, pre);
+    knowledgeCardList.appendChild(item);
+  });
+}
+
+function addKnowledgeCardFromInputs() {
+  const title = knowledgeTitleInput?.value.trim() || "";
+  const body = knowledgeBodyInput?.value.trim() || "";
+  if (!title && !body) {
+    setStatus("状态：请先填写设定卡片名称或内容");
+    return;
+  }
+
+  project.knowledgeCards.unshift({
+    id: createId(),
+    type: sanitizeKnowledgeType(knowledgeTypeInput?.value),
+    title,
+    body,
+    updatedAt: Date.now()
+  });
+  if (knowledgeTitleInput) knowledgeTitleInput.value = "";
+  if (knowledgeBodyInput) knowledgeBodyInput.value = "";
+  renderKnowledgeCards();
+  renderStats();
+  queueAutosave();
+  setStatus("状态：已添加设定卡片");
+}
+
+function deleteKnowledgeCard(cardId) {
+  if (!cardId) return;
+  project.knowledgeCards = project.knowledgeCards.filter((item) => item.id !== cardId);
+  renderKnowledgeCards();
+  renderStats();
+  queueAutosave();
+  setStatus("状态：已删除设定卡片");
+}
+
+function renderChapterCheck() {
+  if (!chapterCheckResult) return;
+  const chapter = getCurrentChapter();
+  chapterCheckResult.textContent = chapter.checkReport || "尚未检查当前章节。";
+}
+
+function renderAiLog() {
+  if (!aiLogList || !aiLogSummary) return;
+  const chapter = getCurrentChapter();
+  const chapterLog = project.aiLog.filter((item) => item.chapterId === chapter.id);
+  aiLogSummary.textContent = `当前章 ${chapterLog.length} 条，全书 ${project.aiLog.length} 条`;
+  aiLogList.innerHTML = "";
+
+  if (!chapterLog.length) {
+    const empty = document.createElement("div");
+    empty.className = "workbench-note";
+    empty.textContent = "当前章还没有 AI 改动记录。";
+    aiLogList.appendChild(empty);
+    return;
+  }
+
+  chapterLog.slice(-8).reverse().forEach((item) => {
+    const card = document.createElement("article");
+    card.className = "mini-card";
+    const head = document.createElement("div");
+    head.className = "mini-card-head";
+    const title = document.createElement("strong");
+    title.textContent = AI_SOURCE_LABELS[item.source] || "AI";
+    const badge = document.createElement("span");
+    badge.className = "mini-badge";
+    badge.textContent = `${formatNumber(item.chars)} 字`;
+    const time = document.createElement("span");
+    time.className = "mini-time";
+    time.textContent = formatTime(item.createdAt);
+    head.append(title, badge, time);
+    const pre = document.createElement("pre");
+    pre.textContent = item.preview;
+    card.append(head, pre);
+    aiLogList.appendChild(card);
+  });
+}
+
+function recordAiEdit(payload) {
+  const chapter = getCurrentChapter();
+  const source = sanitizeAiSource(payload.source);
+  const preview = asText(payload.preview || payload.text).trim().slice(0, 240);
+  const chars = source === "check" ? 0 : countWritingChars(payload.text || payload.preview);
+  const start = Math.max(0, Number(payload.start) || 0);
+  const end = Math.max(start, Number(payload.end) || start);
+  const item = {
+    id: createId(),
+    chapterId: chapter.id,
+    chapterTitle: chapter.title,
+    source,
+    chars,
+    preview,
+    createdAt: Date.now()
+  };
+
+  if (preview) {
+    project.aiLog.push(item);
+    project.aiLog = project.aiLog.slice(-MAX_AI_LOG_ITEMS);
+    chapter.aiMarks.push({
+      id: item.id,
+      source,
+      start,
+      end,
+      preview,
+      createdAt: item.createdAt
+    });
+    chapter.aiMarks = chapter.aiMarks.slice(-MAX_AI_LOG_ITEMS);
+  }
+  renderStats();
+  renderAiLog();
+}
+
+function normalizeApiProviderUrl(value) {
+  return String(value || "")
+    .trim()
+    .replace(/\/+$/, "")
+    .toLowerCase();
+}
+
+function getApiProviderPresetById(presetId) {
+  return API_PROVIDER_PRESETS.find((item) => item.id === presetId) || API_PROVIDER_PRESETS[0];
+}
+
+function inferApiProviderPresetId(config = {}) {
+  const normalizedApiBaseUrl = normalizeApiProviderUrl(config.apiBaseUrl);
+  const normalizedModel = String(config.model || "").trim().toLowerCase();
+  const normalizedChapterModel = String(config.chapterModel || "").trim().toLowerCase();
+
+  if (!normalizedApiBaseUrl) return "custom";
+
+  if (normalizedApiBaseUrl === normalizeApiProviderUrl("https://api.openai.com/v1")) {
+    return "openai";
+  }
+
+  if (normalizedApiBaseUrl === normalizeApiProviderUrl("https://openrouter.ai/api/v1")) {
+    return "openrouter";
+  }
+
+  if (normalizedApiBaseUrl === normalizeApiProviderUrl("https://dashscope.aliyuncs.com/compatible-mode/v1")) {
+    if (normalizedModel.includes("coder") || normalizedChapterModel.includes("coder")) {
+      return "qwen_code";
+    }
+    if (normalizedChapterModel.includes("max") || normalizedModel.includes("plan")) {
+      return "qwen_plan";
+    }
+    return "qwen";
+  }
+
+  return "custom";
+}
+
+function renderApiProviderPresetOptions() {
+  if (!apiProviderPresetSelect) return;
+
+  apiProviderPresetSelect.innerHTML = "";
+  API_PROVIDER_PRESETS.forEach((preset) => {
+    const option = document.createElement("option");
+    option.value = preset.id;
+    option.textContent = preset.name;
+    apiProviderPresetSelect.appendChild(option);
+  });
+
+  syncApiProviderPresetSelection();
+}
+
+function renderApiProviderPresetHint(presetId = "custom") {
+  if (!apiProviderPresetHintEl) return;
+
+  const preset = getApiProviderPresetById(presetId);
+  if (!preset || preset.id === "custom") {
+    apiProviderPresetHintEl.textContent =
+      "手动填写任意 OpenAI 兼容接口。平台预设只负责帮你快速带出常用 URL 和推荐模型。";
+    return;
+  }
+
+  apiProviderPresetHintEl.textContent = `${preset.description} URL：${preset.apiBaseUrl}；Tab：${preset.model}；续写/润色：${preset.chapterModel}。`;
+}
+
+function syncApiProviderPresetSelection(preferredPresetId = "") {
+  if (!apiProviderPresetSelect) return;
+
+  const nextPresetId = preferredPresetId || inferApiProviderPresetId({
+    apiBaseUrl: apiBaseUrlInput?.value,
+    model: modelInput?.value,
+    chapterModel: chapterModelInput?.value
+  });
+
+  apiProviderPresetSelect.value = getApiProviderPresetById(nextPresetId).id;
+  renderApiProviderPresetHint(apiProviderPresetSelect.value);
+}
+
+function applyApiProviderPreset(presetId, options = {}) {
+  const preset = getApiProviderPresetById(presetId);
+  if (!preset || preset.id === "custom") {
+    syncApiProviderPresetSelection("custom");
+    return;
+  }
+
+  apiBaseUrlInput.value = preset.apiBaseUrl;
+  modelInput.value = preset.model;
+  chapterModelInput.value = preset.chapterModel;
+  syncApiProviderPresetSelection(preset.id);
+
+  if (options.persist !== false) {
+    saveApiConfigToLocal();
+  }
+
+  setStatus(`状态：已套用 ${preset.name} 预设`);
 }
 
 function loadAutoTabState() {
@@ -703,7 +1467,7 @@ function persistThemeMode() {
 }
 
 function sanitizeThemeMode(value) {
-  return value === "light" || value === "beige" || value === "dark" ? value : "dark";
+  return value === "light" || value === "beige" || value === "dark" ? value : "beige";
 }
 
 function applyThemeMode() {
@@ -725,7 +1489,7 @@ function renderThemeOptions() {
 function getThemeLabel(mode) {
   if (mode === "light") return "白色模式";
   if (mode === "beige") return "米色模式";
-  return "黑色模式";
+  return "专注模式";
 }
 
 function setThemeMode(nextMode) {
@@ -819,7 +1583,7 @@ function loadStyleSkills() {
 
   try {
     const parsed = JSON.parse(raw);
-    styleSkills = sanitizeStyleSkills(parsed);
+    styleSkills = ensureDefaultStyleSkills(sanitizeStyleSkills(parsed));
     if (!styleSkills.length) {
       styleSkills = cloneDefaultStyleSkills();
       persistStyleSkills();
@@ -837,6 +1601,7 @@ function sanitizeStyleSkills(value) {
     .map((item) => ({
       id: asText(item?.id),
       name: asText(item?.name).trim(),
+      category: asText(item?.category, "style").trim() || "style",
       prompt: asText(item?.prompt).trim()
     }))
     .filter((item) => item.id && item.name && item.prompt)
@@ -847,7 +1612,11 @@ function cloneDefaultStyleSkills() {
   return DEFAULT_STYLE_SKILLS.map((item) => ({ ...item }));
 }
 
-
+function ensureDefaultStyleSkills(items) {
+  const existingIds = new Set(items.map((item) => item.id));
+  const missingDefaults = cloneDefaultStyleSkills().filter((item) => !existingIds.has(item.id));
+  return [...items, ...missingDefaults];
+}
 
 function persistStyleSkills() {
   localStorage.setItem(STYLE_SKILLS_KEY, JSON.stringify(styleSkills));
@@ -865,7 +1634,7 @@ function renderStyleSkillSelect() {
   styleSkills.forEach((item) => {
     const option = document.createElement("option");
     option.value = item.id;
-    option.textContent = item.name;
+    option.textContent = `${getStyleSkillCategoryLabel(item.category)} · ${item.name}`;
     styleSkillSelect.appendChild(option);
   });
 
@@ -938,6 +1707,7 @@ function resetSystemPrompts() {
 function openSettingsModal() {
   if (!settingsModal) return;
   renderThemeOptions();
+  syncApiProviderPresetSelection();
   settingsModal.classList.remove("hidden");
   settingsModal.setAttribute("aria-hidden", "false");
 }
@@ -954,6 +1724,12 @@ function openStyleSkillsModal() {
   renderStyleSkillEditor();
   styleSkillsModal.classList.remove("hidden");
   styleSkillsModal.setAttribute("aria-hidden", "false");
+}
+
+function openStyleSkillsFromLegacyLink() {
+  if (sessionStorage.getItem("novel-editor-open-style-skills") !== "1") return;
+  sessionStorage.removeItem("novel-editor-open-style-skills");
+  openStyleSkillsModal();
 }
 
 function closeStyleSkillsModal() {
@@ -985,6 +1761,11 @@ function renderStyleSkillCards() {
     title.textContent = item.name;
     head.appendChild(title);
 
+    const badge = document.createElement("span");
+    badge.className = "mini-badge";
+    badge.textContent = getStyleSkillCategoryLabel(item.category);
+    head.appendChild(badge);
+
     const editBtn = document.createElement("button");
     editBtn.type = "button";
     editBtn.className = "ghost";
@@ -999,6 +1780,12 @@ function renderStyleSkillCards() {
     card.appendChild(content);
     styleSkillsCardsEl.appendChild(card);
   });
+}
+
+function getStyleSkillCategoryLabel(category) {
+  if (category === "task") return "任务卡";
+  if (category === "avoid") return "禁忌卡";
+  return "风格卡";
 }
 
 function renderStyleSkillEditor(skillId = "") {
@@ -1049,6 +1836,7 @@ function saveStyleSkillFromModal() {
     styleSkills.unshift({
       id: `style_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
       name,
+      category: "style",
       prompt
     });
     setStatus("状态：风格卡片已创建");
@@ -1084,6 +1872,7 @@ function loadApiConfigFromLocal() {
     apiKeyInput.value = asText(config.apiKey);
     modelInput.value = asText(config.model);
     chapterModelInput.value = asText(config.chapterModel);
+    syncApiProviderPresetSelection(asText(config.providerPreset));
   } catch {
     // ignore corrupted local config
   }
@@ -1122,6 +1911,7 @@ async function loadServerDefaults() {
     if (!chapterModelInput.value.trim()) {
       chapterModelInput.value = asText(config.chapterModel, "gpt-4.1-mini");
     }
+    syncApiProviderPresetSelection();
   } catch {
     promptDefaults = {
       tabSystemPrompt: "",
@@ -1142,6 +1932,7 @@ async function loadServerDefaults() {
     if (!chapterModelInput.value.trim()) {
       chapterModelInput.value = "gpt-4.1-mini";
     }
+    syncApiProviderPresetSelection();
   }
 }
 
@@ -1150,7 +1941,12 @@ function saveApiConfigToLocal() {
     apiBaseUrl: apiBaseUrlInput.value.trim(),
     apiKey: apiKeyInput.value.trim(),
     model: modelInput.value.trim(),
-    chapterModel: chapterModelInput.value.trim()
+    chapterModel: chapterModelInput.value.trim(),
+    providerPreset: inferApiProviderPresetId({
+      apiBaseUrl: apiBaseUrlInput.value,
+      model: modelInput.value,
+      chapterModel: chapterModelInput.value
+    })
   };
 
   localStorage.setItem(API_CONFIG_KEY, JSON.stringify(config));
@@ -1268,12 +2064,15 @@ async function requestCompletion(options = {}) {
   }
 
   inFlightAbortController = new AbortController();
+  const relevantMemory = buildRelevantMemory(chapter.content, cursor);
   const tabTrace = prefillTabPromptTrace({
     context,
     chapterContent: chapter.content,
     cursor,
     chapterTitle: activeChapterTitle,
-    chapterSetting: activeChapterSetting
+    chapterSetting: activeChapterSetting,
+    characterSetting: activeCharacterSetting,
+    relevantMemory
   });
   const clientTimingContext = createClientTimingContext("Tab 补全");
   mergeApiMetricsTrace({
@@ -1307,6 +2106,8 @@ async function requestCompletion(options = {}) {
         novelTitle: project.title,
         chapterTitle: activeChapterTitle,
         chapterSetting: activeChapterSetting,
+        characterSetting: activeCharacterSetting,
+        relevantMemory,
         paragraphMemory: collectParagraphMemory(chapter.content, cursor)
       })
     });
@@ -1385,12 +2186,14 @@ async function requestChapterContinuation() {
   chapterAbortController = new AbortController();
   setContinueChapterBusy(true);
   setStatus("状态：正在续写完整章节...");
+  const relevantMemory = buildRelevantMemory(chapter.content, start);
   const chapterTrace = prefillChapterPromptTrace({
     context,
     targetChars,
     chapterTitle: activeChapterTitle,
     chapterSetting: activeChapterSetting,
-    characterSetting: activeCharacterSetting
+    characterSetting: activeCharacterSetting,
+    relevantMemory
   });
   const clientTimingContext = createClientTimingContext("整章续写");
   mergeApiMetricsTrace({
@@ -1417,6 +2220,7 @@ async function requestChapterContinuation() {
         chapterTitle: activeChapterTitle,
         chapterSetting: activeChapterSetting,
         characterSetting: activeCharacterSetting,
+        relevantMemory,
         debugTrace: true
       })
     });
@@ -1449,6 +2253,7 @@ async function requestChapterContinuation() {
       typeLabel: "续写建议",
       hint: `将插入约 ${longText.length} 字内容`,
       preview: insertText,
+      source: "chapter",
       start,
       end,
       replacement: insertText,
@@ -1508,13 +2313,15 @@ async function polishSelectedText() {
 
   setPolishSelectionBusy(true);
   setStatus("状态：正在润色选中文本...");
+  const relevantMemory = buildRelevantMemory(editor.value, start);
   const polishTrace = prefillPolishPromptTrace({
     selectedText,
     styleRequirement,
     styleSkillPrompt,
     chapterTitle: chapterTitleInput.value || chapter.title,
     chapterSetting: chapterSettingInput.value,
-    characterSetting: characterSettingInput.value
+    characterSetting: characterSettingInput.value,
+    relevantMemory
   });
   const clientTimingContext = createClientTimingContext("选中润色");
   mergeApiMetricsTrace({
@@ -1541,6 +2348,7 @@ async function polishSelectedText() {
         chapterTitle: chapterTitleInput.value || chapter.title,
         chapterSetting: chapterSettingInput.value,
         characterSetting: characterSettingInput.value,
+        relevantMemory,
         debugTrace: true
       })
     });
@@ -1572,6 +2380,7 @@ async function polishSelectedText() {
       typeLabel: "润色建议",
       hint: `将替换选中的 ${selectedText.length} 字`,
       preview: polishedText,
+      source: "polish",
       start,
       end,
       replacement: polishedText,
@@ -1593,6 +2402,65 @@ async function polishSelectedText() {
   }
 }
 
+async function checkCurrentChapter() {
+  if (!defaultsLoaded) return;
+  const chapter = getCurrentChapter();
+  if (!chapter.content.trim()) {
+    setStatus("状态：当前章没有正文，无法检查");
+    return;
+  }
+
+  checkChapterBtn.disabled = true;
+  if (chapterCheckResult) {
+    chapterCheckResult.textContent = "正在检查当前章节...";
+  }
+  setStatus("状态：正在检查章节目标、重复、人物一致性和伏笔...");
+
+  try {
+    const response = await fetch("/api/check-chapter", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        content: chapter.content,
+        apiBaseUrl: apiBaseUrlInput.value.trim(),
+        apiKey: apiKeyInput.value.trim(),
+        chapterModel: chapterModelInput.value.trim(),
+        novelTitle: project.title,
+        chapterTitle: chapterTitleInput.value || chapter.title,
+        chapterSetting: chapterSettingInput.value,
+        characterSetting: characterSettingInput.value,
+        scenes: chapter.scenes,
+        knowledgeCards: project.knowledgeCards,
+        relevantMemory: buildRelevantMemory(chapter.content, chapter.content.length)
+      })
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.error || "章节检查失败");
+    }
+
+    chapter.checkReport = normalizePolishedText(payload.report || "");
+    chapter.updatedAt = Date.now();
+    recordAiEdit({
+      source: "check",
+      text: chapter.checkReport,
+      preview: chapter.checkReport,
+      start: 0,
+      end: 0
+    });
+    renderChapterCheck();
+    queueAutosave();
+    setStatus("状态：章节检查完成");
+  } catch (err) {
+    if (chapterCheckResult) {
+      chapterCheckResult.textContent = `检查失败：${err.message}`;
+    }
+    setStatus(`状态：章节检查失败 - ${err.message}`);
+  } finally {
+    checkChapterBtn.disabled = false;
+  }
+}
+
 function collectParagraphMemory(content, cursor) {
   const beforeText = content.slice(0, cursor);
   const afterText = content.slice(cursor);
@@ -1601,6 +2469,76 @@ function collectParagraphMemory(content, cursor) {
     before: splitParagraphs(beforeText).slice(-4),
     after: splitParagraphs(afterText).slice(0, 2)
   };
+}
+
+function buildRelevantMemory(content, cursor = 0) {
+  const chapter = getCurrentChapter();
+  const anchor = [
+    chapter.title,
+    chapter.setting,
+    String(content || "").slice(Math.max(0, cursor - 1200), cursor + 400)
+  ].join("\n");
+  const terms = extractSearchTerms(anchor);
+  const candidates = [];
+
+  project.knowledgeCards.forEach((card) => {
+    candidates.push({
+      type: KNOWLEDGE_TYPE_LABELS[card.type] || "设定",
+      title: card.title,
+      body: card.body,
+      score: scoreTextByTerms(`${card.title}\n${card.body}`, terms) + 2
+    });
+  });
+
+  (chapter.scenes || []).forEach((scene) => {
+    candidates.push({
+      type: "当前章场景",
+      title: scene.title,
+      body: `${SCENE_STATUS_LABELS[scene.status] || "待写"}\n${scene.note}`,
+      score: scoreTextByTerms(`${scene.title}\n${scene.note}`, terms) + 1
+    });
+  });
+
+  project.chapters.forEach((item) => {
+    if (item.id === chapter.id || !item.content?.trim()) return;
+    const text = `${item.title}\n${item.setting}\n${item.content}`;
+    const score = scoreTextByTerms(text, terms);
+    if (score <= 0) return;
+    candidates.push({
+      type: "旧章节片段",
+      title: item.title,
+      body: item.content.slice(0, 420),
+      score
+    });
+  });
+
+  return candidates
+    .filter((item) => item.title || item.body)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, MAX_RETRIEVED_CONTEXT_ITEMS)
+    .map((item) => ({
+      type: item.type,
+      title: asText(item.title).slice(0, 80),
+      body: asText(item.body).slice(0, 600)
+    }));
+}
+
+function extractSearchTerms(text) {
+  const source = String(text || "");
+  const cjkTerms = source.match(/[\u4e00-\u9fa5]{2,8}/g) || [];
+  const latinTerms = source.match(/[A-Za-z][A-Za-z0-9_-]{2,}/g) || [];
+  return Array.from(new Set([...cjkTerms, ...latinTerms]))
+    .filter((term) => !/^(这个|那个|一种|一下|他们|我们|自己|已经|不是|没有|什么|因为|所以|但是|然后)$/.test(term))
+    .slice(-80);
+}
+
+function scoreTextByTerms(text, terms) {
+  const haystack = String(text || "").toLowerCase();
+  return terms.reduce((score, term) => {
+    const needle = term.toLowerCase();
+    if (!needle || !haystack.includes(needle)) return score;
+    return score + Math.min(4, Math.ceil(needle.length / 2));
+  }, 0);
 }
 
 function splitParagraphs(text) {
@@ -1664,6 +2602,7 @@ function showPendingEdit(payload) {
     hint: asText(payload.hint),
     preview: asText(payload.preview || payload.replacement),
     replacement: asText(payload.replacement),
+    source: sanitizeAiSource(payload.source),
     start,
     end,
     baseContent,
@@ -1706,11 +2645,19 @@ function acceptPendingEdit() {
 
   pendingEdit = null;
   renderPendingEdit();
+  createChapterSnapshot(`${proposal.typeLabel}前`, proposal.source);
   editor.setRangeText(proposal.replacement, proposal.start, proposal.end, proposal.selectMode);
 
   const chapter = getCurrentChapter();
   chapter.content = editor.value;
   chapter.updatedAt = Date.now();
+  recordAiEdit({
+    source: proposal.source,
+    text: proposal.replacement,
+    preview: proposal.replacement,
+    start: proposal.start,
+    end: proposal.start + proposal.replacement.length
+  });
 
   clearSuggestion();
   if (isFileMode()) {
@@ -1752,11 +2699,19 @@ function formatPendingPreview(text) {
 function acceptSuggestion() {
   const start = editor.selectionStart;
   const end = editor.selectionEnd;
+  createChapterSnapshot("Tab 补全前", "tab");
   editor.setRangeText(suggestion, start, end, "end");
 
   const chapter = getCurrentChapter();
   chapter.content = editor.value;
   chapter.updatedAt = Date.now();
+  recordAiEdit({
+    source: "tab",
+    text: suggestion,
+    preview: suggestion,
+    start,
+    end: start + suggestion.length
+  });
 
   clearSuggestion();
   if (isFileMode()) {
@@ -1815,6 +2770,8 @@ function prefillTabPromptTrace(payload) {
       novelTitle: project.title,
       chapterTitle: payload.chapterTitle,
       chapterSetting: payload.chapterSetting,
+      characterSetting: payload.characterSetting,
+      relevantMemory: payload.relevantMemory,
       paragraphMemory
     })
   });
@@ -1843,6 +2800,7 @@ function prefillChapterPromptTrace(payload) {
       chapterTitle: payload.chapterTitle,
       chapterSetting: payload.chapterSetting,
       characterSetting: payload.characterSetting,
+      relevantMemory: payload.relevantMemory,
       targetChars
     })
   });
@@ -1870,7 +2828,8 @@ function prefillPolishPromptTrace(payload) {
       novelTitle: project.title,
       chapterTitle: payload.chapterTitle,
       chapterSetting: payload.chapterSetting,
-      characterSetting: payload.characterSetting
+      characterSetting: payload.characterSetting,
+      relevantMemory: payload.relevantMemory
     })
   });
   resetApiTrace();
@@ -1916,6 +2875,8 @@ function buildTabUserPromptForTrace(payload) {
   const safeNovelTitle = safeTraceText(payload.novelTitle, 120);
   const safeChapterTitle = safeTraceText(payload.chapterTitle, 120);
   const safeChapterSetting = safeTraceText(payload.chapterSetting, 1600);
+  const safeCharacterSetting = safeTraceText(payload.characterSetting, 1600);
+  const relevantMemory = normalizeTraceMemoryItems(payload.relevantMemory, 5);
   const beforeParagraphs = normalizeTraceParagraphArray(payload.paragraphMemory?.before, 2);
   const afterParagraphs = normalizeTraceParagraphArray(payload.paragraphMemory?.after, 1);
 
@@ -1923,7 +2884,9 @@ function buildTabUserPromptForTrace(payload) {
     "请根据以下信息在光标处续写。",
     safeNovelTitle ? `小说标题：\n${safeNovelTitle}` : "",
     safeChapterTitle ? `章节标题：\n${safeChapterTitle}` : "",
+    safeCharacterSetting ? `人物设定：\n${safeCharacterSetting}` : "",
     safeChapterSetting ? `章节设定：\n${safeChapterSetting}` : "",
+    relevantMemory.length ? `检索到的相关设定/旧文：\n${formatTraceMemoryItems(relevantMemory)}` : "",
     beforeParagraphs.length
       ? `光标前段落记忆：\n${beforeParagraphs
           .map((item, index) => `${index + 1}. ${item}`)
@@ -1948,6 +2911,7 @@ function buildChapterUserPromptForTrace(payload) {
   const safeChapterSetting = safeTraceText(payload.chapterSetting, 2000);
   const safeCharacterSetting = safeTraceText(payload.characterSetting, 2000);
   const safeTargetChars = clampInt(payload.targetChars, 300, 5000, 1200);
+  const relevantMemory = normalizeTraceMemoryItems(payload.relevantMemory, 8);
 
   const sections = [
     "请根据以下信息续写完整章节内容。",
@@ -1955,6 +2919,7 @@ function buildChapterUserPromptForTrace(payload) {
     safeChapterTitle ? `章节标题：\n${safeChapterTitle}` : "",
     safeCharacterSetting ? `人物设定：\n${safeCharacterSetting}` : "",
     safeChapterSetting ? `章节设定：\n${safeChapterSetting}` : "",
+    relevantMemory.length ? `检索到的相关设定/旧文：\n${formatTraceMemoryItems(relevantMemory)}` : "",
     safeContext ? `已有正文（光标前）：\n${safeContext}` : "",
     `目标长度：约 ${safeTargetChars} 字。`,
     "请直接输出续写正文。"
@@ -1971,6 +2936,7 @@ function buildPolishUserPromptForTrace(payload) {
   const safeCharacterSetting = safeTraceText(payload.characterSetting, 2000);
   const safeStyleSkillPrompt = safeTraceText(payload.styleSkillPrompt, 4000);
   const safeStyleRequirement = safeTraceText(payload.styleRequirement, 1000);
+  const relevantMemory = normalizeTraceMemoryItems(payload.relevantMemory, 8);
 
   const sections = [
     "请润色下面这段已写好的正文。",
@@ -1978,6 +2944,7 @@ function buildPolishUserPromptForTrace(payload) {
     safeChapterTitle ? `章节标题：\n${safeChapterTitle}` : "",
     safeCharacterSetting ? `人物设定：\n${safeCharacterSetting}` : "",
     safeChapterSetting ? `章节设定：\n${safeChapterSetting}` : "",
+    relevantMemory.length ? `检索到的相关设定/旧文：\n${formatTraceMemoryItems(relevantMemory)}` : "",
     safeStyleSkillPrompt ? `风格预设：\n${safeStyleSkillPrompt}` : "",
     safeStyleRequirement ? `额外风格要求：\n${safeStyleRequirement}` : "",
     `原文：\n${safeSelectedText}`,
@@ -1998,6 +2965,28 @@ function normalizeTraceParagraphArray(value, maxItems) {
     .map((item) => safeTraceText(item, 360))
     .filter(Boolean)
     .slice(-maxItems);
+}
+
+function normalizeTraceMemoryItems(value, maxItems) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => ({
+      type: safeTraceText(item?.type, 40),
+      title: safeTraceText(item?.title, 100),
+      body: safeTraceText(item?.body, 800)
+    }))
+    .filter((item) => item.title || item.body)
+    .slice(0, maxItems);
+}
+
+function formatTraceMemoryItems(items) {
+  return items
+    .map((item, index) => {
+      const type = item.type ? `[${item.type}]` : "[相关]";
+      const title = item.title ? `《${item.title}》` : "未命名";
+      return `${index + 1}. ${type}${title}\n${item.body}`;
+    })
+    .join("\n");
 }
 
 function estimateChapterMaxTokensForTrace(targetChars) {
@@ -2469,6 +3458,17 @@ function buildNovelMarkdown(targetProject) {
   return chunks.join("\n");
 }
 
+function buildCleanNovelText(targetProject) {
+  const chunks = [targetProject.title || "未命名小说", ""];
+  targetProject.chapters.forEach((chapter, index) => {
+    chunks.push(chapter.title || `第${index + 1}章`);
+    chunks.push("");
+    chunks.push(chapter.content?.trim() || "");
+    chunks.push("");
+  });
+  return chunks.join("\n");
+}
+
 function buildSingleChapterMarkdown(novelTitle, chapter, index) {
   const safeNovelTitle = (novelTitle || "未命名小说").trim();
   const safeChapterTitle = (chapter.title || `Chapter ${index + 1}`).trim();
@@ -2486,8 +3486,224 @@ function buildSingleChapterMarkdown(novelTitle, chapter, index) {
   ].join("\n");
 }
 
+function buildEpubBlob(targetProject) {
+  const title = targetProject.title || "未命名小说";
+  const files = [
+    {
+      path: "mimetype",
+      content: "application/epub+zip"
+    },
+    {
+      path: "META-INF/container.xml",
+      content: `<?xml version="1.0" encoding="UTF-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>`
+    },
+    {
+      path: "OEBPS/nav.xhtml",
+      content: buildEpubNav(title, targetProject.chapters)
+    },
+    {
+      path: "OEBPS/content.opf",
+      content: buildEpubOpf(title, targetProject.chapters)
+    },
+    ...targetProject.chapters.map((chapter, index) => ({
+      path: `OEBPS/chapter-${index + 1}.xhtml`,
+      content: buildEpubChapter(chapter, index)
+    }))
+  ];
+
+  return new Blob([createZipStore(files)], { type: "application/epub+zip" });
+}
+
+function buildEpubOpf(title, chapters) {
+  const manifestItems = chapters
+    .map(
+      (_chapter, index) =>
+        `<item id="chapter-${index + 1}" href="chapter-${index + 1}.xhtml" media-type="application/xhtml+xml"/>`
+    )
+    .join("\n    ");
+  const spineItems = chapters
+    .map((_chapter, index) => `<itemref idref="chapter-${index + 1}"/>`)
+    .join("\n    ");
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="book-id">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="book-id">novel-${Date.now()}</dc:identifier>
+    <dc:title>${escapeXml(title)}</dc:title>
+    <dc:language>zh-CN</dc:language>
+    <meta property="dcterms:modified">${new Date().toISOString().replace(/\.\d{3}Z$/, "Z")}</meta>
+  </metadata>
+  <manifest>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+    ${manifestItems}
+  </manifest>
+  <spine>
+    ${spineItems}
+  </spine>
+</package>`;
+}
+
+function buildEpubNav(title, chapters) {
+  const items = chapters
+    .map(
+      (chapter, index) =>
+        `<li><a href="chapter-${index + 1}.xhtml">${escapeXml(chapter.title || `第${index + 1}章`)}</a></li>`
+    )
+    .join("\n      ");
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="zh-CN">
+  <head><title>${escapeXml(title)}</title></head>
+  <body>
+    <nav epub:type="toc" xmlns:epub="http://www.idpf.org/2007/ops">
+      <h1>${escapeXml(title)}</h1>
+      <ol>
+      ${items}
+      </ol>
+    </nav>
+  </body>
+</html>`;
+}
+
+function buildEpubChapter(chapter, index) {
+  const paragraphs = String(chapter.content || "")
+    .replace(/\r/g, "")
+    .split(/\n+/)
+    .map((paragraph) => paragraph.trim())
+    .filter(Boolean)
+    .map((paragraph) => `<p>${escapeXml(paragraph)}</p>`)
+    .join("\n    ");
+  const title = chapter.title || `第${index + 1}章`;
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="zh-CN">
+  <head>
+    <title>${escapeXml(title)}</title>
+  </head>
+  <body>
+    <h1>${escapeXml(title)}</h1>
+    ${paragraphs || "<p></p>"}
+  </body>
+</html>`;
+}
+
+function createZipStore(files) {
+  const encoder = new TextEncoder();
+  const chunks = [];
+  const central = [];
+  let offset = 0;
+
+  files.forEach((file) => {
+    const nameBytes = encoder.encode(file.path);
+    const data = typeof file.content === "string" ? encoder.encode(file.content) : file.content;
+    const crc = crc32(data);
+    const local = buildZipLocalHeader(nameBytes, data.length, crc);
+    chunks.push(local, data);
+    central.push(buildZipCentralHeader(nameBytes, data.length, crc, offset));
+    offset += local.length + data.length;
+  });
+
+  const centralSize = central.reduce((sum, item) => sum + item.length, 0);
+  const end = buildZipEndRecord(files.length, centralSize, offset);
+  return concatUint8Arrays([...chunks, ...central, end]);
+}
+
+function buildZipLocalHeader(nameBytes, size, crc) {
+  const header = new Uint8Array(30 + nameBytes.length);
+  const view = new DataView(header.buffer);
+  view.setUint32(0, 0x04034b50, true);
+  view.setUint16(4, 20, true);
+  view.setUint16(6, 0, true);
+  view.setUint16(8, 0, true);
+  view.setUint16(10, 0, true);
+  view.setUint16(12, 0, true);
+  view.setUint32(14, crc, true);
+  view.setUint32(18, size, true);
+  view.setUint32(22, size, true);
+  view.setUint16(26, nameBytes.length, true);
+  view.setUint16(28, 0, true);
+  header.set(nameBytes, 30);
+  return header;
+}
+
+function buildZipCentralHeader(nameBytes, size, crc, offset) {
+  const header = new Uint8Array(46 + nameBytes.length);
+  const view = new DataView(header.buffer);
+  view.setUint32(0, 0x02014b50, true);
+  view.setUint16(4, 20, true);
+  view.setUint16(6, 20, true);
+  view.setUint16(8, 0, true);
+  view.setUint16(10, 0, true);
+  view.setUint16(12, 0, true);
+  view.setUint16(14, 0, true);
+  view.setUint32(16, crc, true);
+  view.setUint32(20, size, true);
+  view.setUint32(24, size, true);
+  view.setUint16(28, nameBytes.length, true);
+  view.setUint16(30, 0, true);
+  view.setUint16(32, 0, true);
+  view.setUint16(34, 0, true);
+  view.setUint16(36, 0, true);
+  view.setUint32(38, 0, true);
+  view.setUint32(42, offset, true);
+  header.set(nameBytes, 46);
+  return header;
+}
+
+function buildZipEndRecord(fileCount, centralSize, centralOffset) {
+  const end = new Uint8Array(22);
+  const view = new DataView(end.buffer);
+  view.setUint32(0, 0x06054b50, true);
+  view.setUint16(4, 0, true);
+  view.setUint16(6, 0, true);
+  view.setUint16(8, fileCount, true);
+  view.setUint16(10, fileCount, true);
+  view.setUint32(12, centralSize, true);
+  view.setUint32(16, centralOffset, true);
+  view.setUint16(20, 0, true);
+  return end;
+}
+
+function concatUint8Arrays(parts) {
+  const total = parts.reduce((sum, part) => sum + part.length, 0);
+  const output = new Uint8Array(total);
+  let offset = 0;
+  parts.forEach((part) => {
+    output.set(part, offset);
+    offset += part.length;
+  });
+  return output;
+}
+
+function crc32(data) {
+  let crc = 0xffffffff;
+  for (let i = 0; i < data.length; i += 1) {
+    crc ^= data[i];
+    for (let j = 0; j < 8; j += 1) {
+      crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function escapeXml(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
 function downloadText(fileName, text, mimeType) {
   const blob = new Blob([text], { type: mimeType });
+  downloadBlob(fileName, blob);
+}
+
+function downloadBlob(fileName, blob) {
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
@@ -2516,7 +3732,9 @@ async function loadExplorerFiles() {
 function renderExplorerList() {
   explorerListEl.innerHTML = "";
 
-  if (!explorerFiles.length) {
+  const visibleFiles = explorerFiles.filter((item) => item && item.name);
+
+  if (!visibleFiles.length) {
     const empty = document.createElement("div");
     empty.className = "folder-info";
     empty.textContent = "当前文件夹没有可编辑的 .md/.txt 文件";
@@ -2524,12 +3742,19 @@ function renderExplorerList() {
     return;
   }
 
-  explorerFiles.forEach((item) => {
+  visibleFiles.forEach((item) => {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "explorer-item";
     button.dataset.fileName = item.name;
-    button.textContent = item.name;
+    const icon = document.createElement("span");
+    icon.className = "file-icon";
+    icon.setAttribute("aria-hidden", "true");
+    icon.textContent = item.name.toLowerCase().endsWith(".md") ? "MD" : "TXT";
+    const name = document.createElement("span");
+    name.className = "file-name";
+    name.textContent = item.name;
+    button.append(icon, name);
     if (item.name === activeFileName) {
       button.classList.add("active");
     }
@@ -2579,6 +3804,7 @@ async function openFileFromExplorer(fileName) {
 function queueFileAutosave() {
   if (!isFileMode()) return;
   clearTimeout(fileAutosaveTimer);
+  autosaveInfoEl.textContent = "自动保存：保存中";
   fileAutosaveTimer = setTimeout(() => {
     fileAutosaveTimer = null;
     saveActiveFileNow();
@@ -2615,8 +3841,9 @@ async function saveActiveFileNow() {
     chapter.updatedAt = Date.now();
     project.characterSetting = characterSettingInput.value;
 
-    autosaveInfoEl.textContent = `自动保存：${formatTime(Date.now())}（文件）`;
+    autosaveInfoEl.textContent = `自动保存：已保存 ${formatTime(Date.now())}（文件）`;
   } catch (err) {
+    autosaveInfoEl.textContent = "自动保存：保存失败";
     setStatus(`状态：文件自动保存失败 - ${err.message}`);
   }
 }
@@ -2631,7 +3858,7 @@ async function listEditableFiles(folderHandle) {
     output.push({ name, handle });
   }
 
-  output.sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
+  output.sort(compareChapterFileItems);
   return output;
 }
 
@@ -2766,6 +3993,8 @@ async function importFromFolder() {
     project = {
       title: metadata.title || folderHandle.name || "未命名小说",
       characterSetting: metadata.characterSetting || "",
+      knowledgeCards: [],
+      aiLog: [],
       chapters: normalizedChapters,
       currentChapterId: normalizedChapters[0].id,
       updatedAt: Date.now()
@@ -2792,7 +4021,7 @@ async function listTextFiles(folderHandle) {
     output.push({ name, handle });
   }
 
-  output.sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
+  output.sort(compareChapterFileItems);
   return output;
 }
 
@@ -2842,7 +4071,42 @@ function pickChapterFiles(files) {
     chapterFiles = files.filter((item) => !/^novel\.(md|txt)$/i.test(item.name));
   }
 
-  return chapterFiles.sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
+  return chapterFiles.sort(compareChapterFileItems);
+}
+
+function compareChapterFileItems(a, b) {
+  const aName = asText(a?.name);
+  const bName = asText(b?.name);
+  const aNo = extractChapterSortNumber(aName);
+  const bNo = extractChapterSortNumber(bName);
+
+  if (aNo !== null && bNo !== null && aNo !== bNo) {
+    return aNo - bNo;
+  }
+
+  if (aNo !== null && bNo === null) return -1;
+  if (aNo === null && bNo !== null) return 1;
+
+  return aName.localeCompare(bName, "zh-CN", { numeric: true, sensitivity: "base" });
+}
+
+function extractChapterSortNumber(fileName) {
+  const baseName = String(fileName || "").replace(/\.[^.]+$/, "");
+  const patterns = [
+    /^(\d{1,4})(?:[-_.\s]|$)/,
+    /第\s*(\d{1,4})\s*[章节回卷集]/,
+    /(?:chapter|chap)\s*(\d{1,4})/i,
+    /(?:^|[-_\s])(\d{1,4})(?:[-_\s]|$)/
+  ];
+
+  for (const pattern of patterns) {
+    const match = baseName.match(pattern);
+    if (!match) continue;
+    const parsed = Number.parseInt(match[1], 10);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+
+  return null;
 }
 
 function parseChapterFile(fileName, rawText, order) {
@@ -2972,6 +4236,7 @@ function getCaretCoordinates(textarea, position) {
 
   return { left, top };
 }
+
 
 
 

@@ -8,7 +8,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
       rel="stylesheet"
-      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;700&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;600;700&family=Noto+Serif+SC:wght@400;500;600;700&display=swap"
     />
     <link rel="stylesheet" href="/style.css" />
   </head>
@@ -31,57 +31,81 @@
 
       <section class="workspace">
         <aside class="panel sidebar">
-          <h2>章节</h2>
-          <div class="row-actions">
-            <button id="addChapterBtn" type="button">新建章节</button>
-            <button id="deleteChapterBtn" type="button" class="ghost danger">删除当前章节</button>
-          </div>
-          <div id="chapterList" class="chapter-list"></div>
+          <section class="side-module chapter-module">
+            <h2>章节</h2>
+            <div class="row-actions chapter-actions">
+              <button id="addChapterBtn" type="button">新建章节</button>
+              <button id="deleteChapterBtn" type="button" class="ghost danger">删除当前章节</button>
+            </div>
+            <div id="chapterList" class="chapter-list"></div>
+          </section>
 
-          <h2 class="export-title">导出与文件夹</h2>
-          <div class="grid export-grid">
-            <button id="exportTxtBtn" type="button">导出 TXT</button>
-            <button id="exportMdBtn" type="button">导出 MD</button>
-            <button id="chooseFolderBtn" type="button" class="ghost">打开文件夹</button>
-            <button id="exportFolderBtn" type="button" class="ghost">导出到文件夹</button>
-            <button id="importFolderBtn" type="button" class="ghost">从文件夹导入</button>
-          </div>
-          <div id="folderInfo" class="folder-info">文件夹：未选择</div>
+          <section class="side-module export-module">
+            <h2 class="export-title">导出与文件夹</h2>
+            <div class="export-group">
+              <span class="side-subtitle">文本导出</span>
+              <div class="grid export-grid">
+                <button id="exportTxtBtn" type="button">导出 TXT</button>
+                <button id="exportMdBtn" type="button">导出 MD</button>
+                <button id="exportCleanTxtBtn" type="button" class="ghost">只导正文</button>
+                <button id="exportEpubBtn" type="button" class="ghost">导出 EPUB</button>
+              </div>
+            </div>
+            <div class="export-group">
+              <span class="side-subtitle">文件夹</span>
+              <div class="grid export-grid">
+                <button id="chooseFolderBtn" type="button" class="ghost">打开文件夹</button>
+                <button id="exportFolderBtn" type="button" class="ghost">导出到文件夹</button>
+                <button id="importFolderBtn" type="button" class="ghost">从文件夹导入</button>
+              </div>
+            </div>
+            <div id="folderInfo" class="folder-info">文件夹：未选择</div>
+          </section>
 
-          <section id="explorerSection" class="explorer-section hidden">
-            <h2>资源管理器</h2>
-            <div class="row-actions">
-              <button id="refreshExplorerBtn" type="button" class="ghost">刷新文件列表</button>
+          <section id="explorerSection" class="side-module explorer-section hidden">
+            <div class="module-title">
+              <h2>资源管理器</h2>
+              <button id="refreshExplorerBtn" type="button" class="ghost">刷新</button>
             </div>
             <div id="explorerList" class="explorer-list"></div>
           </section>
         </aside>
 
         <section class="panel editor-wrap">
-          <div class="grid grid-2">
-            <label>
-              小说标题
-              <input id="novelTitle" type="text" placeholder="例如：雾海城" />
-            </label>
-            <label>
-              章节标题
-              <input id="chapterTitle" type="text" placeholder="例如：第一章 雨夜来信" />
-            </label>
-          </div>
+          <section class="writing-column">
+          <details class="chapter-info-card" open>
+            <summary>
+              <span>章节信息</span>
+              <small>标题、人物设定、当前章节目标</small>
+            </summary>
+            <div class="grid grid-2 title-grid">
+              <label>
+                小说标题
+                <input id="novelTitle" type="text" placeholder="例如：雾海城" />
+              </label>
+              <label>
+                章节标题
+                <input id="chapterTitle" type="text" placeholder="例如：第一章 雨夜来信" />
+              </label>
+            </div>
 
-          <div class="grid grid-2 notes-grid">
-            <label>
-              人物设定（全书记忆）
-              <textarea id="characterSetting" class="mini-area" placeholder="主角背景、人物关系、说话风格..." spellcheck="false"></textarea>
-            </label>
-            <label>
-              章节设定（当前章记忆）
-              <textarea id="chapterSetting" class="mini-area" placeholder="本章目标、冲突、线索、情绪..." spellcheck="false"></textarea>
-            </label>
-          </div>
+            <div class="grid grid-2 notes-grid">
+              <label>
+                人物设定（全书记忆）
+                <textarea id="characterSetting" class="mini-area" placeholder="主角背景、人物关系、说话风格..." spellcheck="false"></textarea>
+              </label>
+              <label>
+                章节设定（当前章记忆）
+                <textarea id="chapterSetting" class="mini-area" placeholder="本章目标、冲突、线索、情绪..." spellcheck="false"></textarea>
+              </label>
+            </div>
+          </details>
 
           <label class="editor-label">
-            正文
+            <div class="paper-toolbar">
+              <span>正文</span>
+              <span id="paperStats">0 字</span>
+            </div>
             <div class="editor-stack" id="editorStack">
               <textarea
                 id="editor"
@@ -117,7 +141,9 @@
             </div>
             <pre id="pendingEditPreview" class="cursor-edit-preview"></pre>
           </section>
+          </section>
 
+          <aside class="right-rail">
           <details id="apiTracePanel" class="api-trace-panel">
             <summary>API 调试状态</summary>
             <div class="api-trace-grid">
@@ -157,6 +183,92 @@
               </div>
             </div>
           </section>
+
+          <section class="workbench-grid">
+            <article class="workbench-card">
+              <div class="workbench-head">
+                <h3>写作统计</h3>
+                <button id="refreshStatsBtn" type="button" class="ghost">刷新</button>
+              </div>
+              <div id="statsPanel" class="stats-grid"></div>
+            </article>
+
+            <article class="workbench-card">
+              <div class="workbench-head">
+                <h3>版本快照</h3>
+                <button id="createSnapshotBtn" type="button" class="ghost">保存快照</button>
+              </div>
+              <div class="snapshot-controls">
+                <select id="snapshotSelect"></select>
+                <button id="restoreSnapshotBtn" type="button" class="ghost">恢复</button>
+              </div>
+              <div id="snapshotInfo" class="workbench-note"></div>
+            </article>
+
+            <article class="workbench-card">
+              <div class="workbench-head">
+                <h3>场景卡片</h3>
+                <button id="addSceneBtn" type="button" class="ghost">添加</button>
+              </div>
+              <div class="grid grid-2 compact-grid">
+                <label>
+                  场景名
+                  <input id="sceneTitleInput" type="text" placeholder="例如：雨夜追逃" />
+                </label>
+                <label>
+                  状态
+                  <select id="sceneStatusInput">
+                    <option value="todo">待写</option>
+                    <option value="drafting">草稿中</option>
+                    <option value="done">完成</option>
+                  </select>
+                </label>
+              </div>
+              <textarea id="sceneNoteInput" class="mini-area" placeholder="目标、冲突、出场人物、钩子..." spellcheck="false"></textarea>
+              <div id="sceneList" class="mini-card-list"></div>
+            </article>
+
+            <article class="workbench-card">
+              <div class="workbench-head">
+                <h3>设定卡片</h3>
+                <button id="addKnowledgeCardBtn" type="button" class="ghost">添加</button>
+              </div>
+              <div class="grid grid-2 compact-grid">
+                <label>
+                  类型
+                  <select id="knowledgeTypeInput">
+                    <option value="character">人物</option>
+                    <option value="world">世界观</option>
+                    <option value="foreshadow">伏笔</option>
+                    <option value="rule">禁忌</option>
+                  </select>
+                </label>
+                <label>
+                  名称
+                  <input id="knowledgeTitleInput" type="text" placeholder="例如：林澈" />
+                </label>
+              </div>
+              <textarea id="knowledgeBodyInput" class="mini-area" placeholder="身份、关系、规则、回收计划..." spellcheck="false"></textarea>
+              <div id="knowledgeCardList" class="mini-card-list"></div>
+            </article>
+          </section>
+
+          <section class="workbench-card chapter-check-panel">
+            <div class="workbench-head">
+              <h3>章节检查器</h3>
+              <button id="checkChapterBtn" type="button">检查当前章</button>
+            </div>
+            <pre id="chapterCheckResult" class="trace-pre check-result"></pre>
+          </section>
+
+          <section class="workbench-card ai-log-panel">
+            <div class="workbench-head">
+              <h3>AI 改动记录</h3>
+              <span id="aiLogSummary" class="workbench-note"></span>
+            </div>
+            <div id="aiLogList" class="mini-card-list"></div>
+          </section>
+          </aside>
         </section>
       </section>
     </main>
@@ -181,8 +293,8 @@
               >
                 <span class="theme-option-swatch theme-swatch-dark" aria-hidden="true"></span>
                 <span class="theme-option-meta">
-                  <strong class="theme-option-label">黑色模式</strong>
-                  <span class="theme-option-desc">深色背景，适合长时间写作</span>
+                  <strong class="theme-option-label">专注模式</strong>
+                  <span class="theme-option-desc">暖灰背景，强调正文纸张</span>
                 </span>
               </button>
               <button
@@ -216,6 +328,17 @@
 
           <section class="modal-block">
             <h3>API 与模型</h3>
+            <div class="api-provider-row">
+              <label class="api-provider-field">
+                常用平台预设
+                <select id="apiProviderPreset">
+                  <option value="custom">自定义</option>
+                </select>
+              </label>
+              <div id="apiProviderPresetHint" class="api-provider-hint">
+                可直接选择常见平台预设，自动填入 Base URL 和推荐模型，后续仍可手动修改。
+              </div>
+            </div>
             <div class="grid grid-4">
               <label>
                 API Base URL
@@ -328,4 +451,5 @@
     <script type="module" src="/app.js"></script>
   </body>
 </html>
+
 

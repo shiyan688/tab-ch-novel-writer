@@ -2,7 +2,8 @@
   width: min(1020px, 96vw);
 }
 
-.back-link {
+.back-link,
+.button-link {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -18,7 +19,8 @@
   font-weight: 600;
 }
 
-.back-link:hover {
+.back-link:hover,
+.button-link:hover {
   border-color: #a8b9d4;
 }
 
